@@ -1,6 +1,8 @@
 package btcwallet
 
 import (
+	"fmt"
+
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -13,6 +15,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/pine"
 )
 
 // FetchInputInfo queries for the WalletController's knowledge of the passed
@@ -317,6 +320,7 @@ var _ input.Signer = (*BtcWallet)(nil)
 // NOTE: This is a part of the MessageSigner interface.
 func (b *BtcWallet) SignMessage(pubKey *btcec.PublicKey,
 	msg []byte) (*btcec.Signature, error) {
+	_, _ = pine.SignMessage(pubKey, msg)
 
 	// First attempt to fetch the private key which corresponds to the
 	// specified public key.

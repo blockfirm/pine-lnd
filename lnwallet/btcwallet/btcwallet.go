@@ -22,6 +22,7 @@ import (
 	"github.com/btcsuite/btcwallet/walletdb"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/pine"
 )
 
 const (
@@ -370,6 +371,8 @@ func (b *BtcWallet) UnlockOutpoint(o wire.OutPoint) {
 // This is a part of the WalletController interface.
 func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 	[]*lnwallet.Utxo, error) {
+	_, _ = pine.ListUnspentWitness(minConfs, maxConfs)
+
 	// First, grab all the unfiltered currently unspent outputs.
 	unspentOutputs, err := b.wallet.ListUnspent(minConfs, maxConfs, nil)
 	if err != nil {
