@@ -12,16 +12,33 @@ import (
 	"google.golang.org/grpc"
 )
 
-// SignMessage signs a message using the Pine Lightning API.
-func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) {
-	fmt.Print("\n[PINE]: pine→SignMessage")
+const rpcTarget = "0.0.0.0:8910"
 
-	conn, err := grpc.Dial("0.0.0.0:8910", grpc.WithInsecure())
+var rpcClient PineClient
+
+func getClient() (PineClient, error) {
+	if rpcClient != nil {
+		return rpcClient, nil
+	}
+
+	conn, err := grpc.Dial(rpcTarget, grpc.WithInsecure())
 	if err != nil {
+		fmt.Printf("\nError when connecting Pine RPC\n")
 		return nil, err
 	}
 
-	client := NewPineClient(conn)
+	rpcClient = NewPineClient(conn)
+	return rpcClient, nil
+}
+
+// SignMessage signs a message using the Pine Lightning API.
+func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) {
+	fmt.Print("\n[PINE]: pine→SignMessage\n")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
 
 	request := &SignMessageRequest{
 		PublicKey: pubKey.SerializeUncompressed(),
@@ -39,15 +56,12 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 // ListUnspentWitness returns a list of unspent transaction outputs using
 // the Pine Lightning API.
 func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
-	fmt.Print("\n[PINE]: pine→ListUnspentWitness")
+	fmt.Print("\n[PINE]: pine→ListUnspentWitness\n")
 
-	conn, err := grpc.Dial("0.0.0.0:8910", grpc.WithInsecure())
+	client, err := getClient()
 	if err != nil {
-		fmt.Printf("\nError when connecting Pine RPC\n")
 		return nil, err
 	}
-
-	client := NewPineClient(conn)
 
 	request := &ListUnspentWitnessRequest{
 		MinConfirmations: minConfs,
@@ -83,4 +97,27 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 	}
 
 	return utxos, nil
+}
+
+// LockOupoint marks an unspent transaction output as reserved.
+func LockOutpoint(o wire.OutPoint) error {
+	fmt.Print("\n[PINE]: pine→LockOutpoint\n")
+
+	client, err := getClient()
+	if err != nil {
+		return err
+	}
+
+	request := &LockOutpointRequest{
+		Hash:  o.Hash.CloneBytes(),
+		Index: o.Index,
+	}
+
+	_, err = client.LockOutpoint(context.Background(), request)
+	if err != nil {
+		fmt.Printf("\nError when calling LockOutpoint RPC\n")
+		return err
+	}
+
+	return nil
 }

@@ -354,6 +354,7 @@ func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) LockOutpoint(o wire.OutPoint) {
+	pine.LockOutpoint(o)
 	b.wallet.LockOutpoint(o)
 }
 
