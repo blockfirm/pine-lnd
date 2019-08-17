@@ -43,6 +43,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 	conn, err := grpc.Dial("0.0.0.0:8910", grpc.WithInsecure())
 	if err != nil {
+		fmt.Printf("\nError when connecting Pine RPC\n")
 		return nil, err
 	}
 
@@ -55,15 +56,17 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 	result, err := client.ListUnspentWitness(context.Background(), request)
 	if err != nil {
+		fmt.Printf("\nError when calling ListUnspentWitness RPC\n")
 		return nil, err
 	}
 
 	var utxos []*lnwallet.Utxo
 
 	for _, utxo := range result.Utxos {
-		outPointHash, err := chainhash.NewHash(utxo.OutPoint.Hash)
+		transactionHash, err := chainhash.NewHash(utxo.TransactionHash)
 
 		if err != nil {
+			fmt.Printf("\nError when converting hash\n")
 			return nil, err
 		}
 
@@ -73,8 +76,8 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 			Confirmations: utxo.Confirmations,
 			PkScript:      utxo.PkScript,
 			OutPoint: wire.OutPoint{
-				Hash:  *outPointHash,
-				Index: utxo.OutPoint.Index,
+				Hash:  *transactionHash,
+				Index: utxo.Vout,
 			},
 		})
 	}
