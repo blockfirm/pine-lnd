@@ -121,3 +121,26 @@ func LockOutpoint(o wire.OutPoint) error {
 
 	return nil
 }
+
+// UnlockOupoint unmarks an unspent transaction output as reserved.
+func UnlockOutpoint(o wire.OutPoint) error {
+	fmt.Print("\n[PINE]: pine→UnlockOutpoint\n")
+
+	client, err := getClient()
+	if err != nil {
+		return err
+	}
+
+	request := &UnlockOutpointRequest{
+		Hash:  o.Hash.CloneBytes(),
+		Index: o.Index,
+	}
+
+	_, err = client.UnlockOutpoint(context.Background(), request)
+	if err != nil {
+		fmt.Printf("\nError when calling UnlockOutpoint RPC\n")
+		return err
+	}
+
+	return nil
+}

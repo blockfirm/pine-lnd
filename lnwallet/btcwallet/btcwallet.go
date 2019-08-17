@@ -363,6 +363,7 @@ func (b *BtcWallet) LockOutpoint(o wire.OutPoint) {
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) UnlockOutpoint(o wire.OutPoint) {
+	pine.UnlockOutpoint(o)
 	b.wallet.UnlockOutpoint(o)
 }
 
