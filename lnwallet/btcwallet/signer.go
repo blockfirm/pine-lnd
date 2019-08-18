@@ -30,6 +30,8 @@ func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) 
 		output *wire.TxOut
 	)
 
+	_, _ = pine.FetchInputInfo(prevOut)
+
 	// First check to see if the output is already within the utxo cache.
 	// If so we can return directly saving a disk access.
 	b.cacheMtx.RLock()

@@ -174,3 +174,28 @@ func NewAddress(t lnwallet.AddressType, change bool, netParams *chaincfg.Params)
 
 	return address, nil
 }
+
+// FetchInputInfo returns information about an unspent transaction input
+// belonging to this wallet.
+func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
+	fmt.Print("\n[PINE]: pine→FetchInputInfo\n")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	request := &FetchInputInfoRequest{
+		Hash:  prevOut.Hash.CloneBytes(),
+		Index: prevOut.Index,
+	}
+
+	response, err := client.FetchInputInfo(context.Background(), request)
+	if err != nil {
+		fmt.Printf("\nError when calling FetchInputInfo RPC\n")
+		return nil, err
+	}
+
+	txOut := wire.NewTxOut(response.Value, response.PkScript)
+	return txOut, nil
+}
