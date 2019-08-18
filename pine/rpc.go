@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -45,12 +46,12 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 		Message:   msg,
 	}
 
-	result, err := client.SignMessage(context.Background(), request)
+	response, err := client.SignMessage(context.Background(), request)
 	if err != nil {
 		return nil, err
 	}
 
-	return btcec.ParseDERSignature(result.Signature, btcec.S256())
+	return btcec.ParseDERSignature(response.Signature, btcec.S256())
 }
 
 // ListUnspentWitness returns a list of unspent transaction outputs using
@@ -68,7 +69,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 		MaxConfirmations: maxConfs,
 	}
 
-	result, err := client.ListUnspentWitness(context.Background(), request)
+	response, err := client.ListUnspentWitness(context.Background(), request)
 	if err != nil {
 		fmt.Printf("\nError when calling ListUnspentWitness RPC\n")
 		return nil, err
@@ -76,7 +77,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 	var utxos []*lnwallet.Utxo
 
-	for _, utxo := range result.Utxos {
+	for _, utxo := range response.Utxos {
 		transactionHash, err := chainhash.NewHash(utxo.TransactionHash)
 
 		if err != nil {
@@ -99,7 +100,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 	return utxos, nil
 }
 
-// LockOupoint marks an unspent transaction output as reserved.
+// LockOutpoint marks an unspent transaction output as reserved.
 func LockOutpoint(o wire.OutPoint) error {
 	fmt.Print("\n[PINE]: pine→LockOutpoint\n")
 
@@ -122,7 +123,7 @@ func LockOutpoint(o wire.OutPoint) error {
 	return nil
 }
 
-// UnlockOupoint unmarks an unspent transaction output as reserved.
+// UnlockOutpoint unmarks an unspent transaction output as reserved.
 func UnlockOutpoint(o wire.OutPoint) error {
 	fmt.Print("\n[PINE]: pine→UnlockOutpoint\n")
 
@@ -143,4 +144,33 @@ func UnlockOutpoint(o wire.OutPoint) error {
 	}
 
 	return nil
+}
+
+// NewAddress returns a new address.
+func NewAddress(t lnwallet.AddressType, change bool, netParams *chaincfg.Params) (btcutil.Address, error) {
+	fmt.Print("\n[PINE]: pine→NewAddress\n")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	request := &NewAddressRequest{
+		Type:   uint32(t),
+		Change: change,
+	}
+
+	response, err := client.NewAddress(context.Background(), request)
+	if err != nil {
+		fmt.Printf("\nError when calling NewAddress RPC\n")
+		return nil, err
+	}
+
+	address, err := btcutil.DecodeAddress(response.Address, netParams)
+	if err != nil {
+		fmt.Printf("\nError when decoding address\n")
+		return nil, err
+	}
+
+	return address, nil
 }

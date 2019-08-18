@@ -240,6 +240,7 @@ func (b *BtcWallet) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) NewAddress(t lnwallet.AddressType, change bool) (btcutil.Address, error) {
+	_, _ = pine.NewAddress(t, change, b.netParams)
 	var keyScope waddrmgr.KeyScope
 
 	switch t {
