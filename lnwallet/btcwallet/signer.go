@@ -190,6 +190,8 @@ func maybeTweakPrivKey(signDesc *input.SignDescriptor,
 func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) ([]byte, error) {
 
+	_, _ = pine.SignOutputRaw(tx, signDesc)
+
 	witnessScript := signDesc.WitnessScript
 
 	// First attempt to fetch the private key which corresponds to the

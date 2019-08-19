@@ -614,6 +614,518 @@ func (m *FetchInputInfoResponse) GetPkScript() []byte {
 	return nil
 }
 
+type SignOutputRawRequest struct {
+	Transaction          *Transaction    `protobuf:"bytes,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	SignDescriptor       *SignDescriptor `protobuf:"bytes,2,opt,name=signDescriptor,proto3" json:"signDescriptor,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}        `json:"-"`
+	XXX_unrecognized     []byte          `json:"-"`
+	XXX_sizecache        int32           `json:"-"`
+}
+
+func (m *SignOutputRawRequest) Reset()         { *m = SignOutputRawRequest{} }
+func (m *SignOutputRawRequest) String() string { return proto.CompactTextString(m) }
+func (*SignOutputRawRequest) ProtoMessage()    {}
+func (*SignOutputRawRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{13}
+}
+
+func (m *SignOutputRawRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignOutputRawRequest.Unmarshal(m, b)
+}
+func (m *SignOutputRawRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignOutputRawRequest.Marshal(b, m, deterministic)
+}
+func (m *SignOutputRawRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignOutputRawRequest.Merge(m, src)
+}
+func (m *SignOutputRawRequest) XXX_Size() int {
+	return xxx_messageInfo_SignOutputRawRequest.Size(m)
+}
+func (m *SignOutputRawRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignOutputRawRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignOutputRawRequest proto.InternalMessageInfo
+
+func (m *SignOutputRawRequest) GetTransaction() *Transaction {
+	if m != nil {
+		return m.Transaction
+	}
+	return nil
+}
+
+func (m *SignOutputRawRequest) GetSignDescriptor() *SignDescriptor {
+	if m != nil {
+		return m.SignDescriptor
+	}
+	return nil
+}
+
+type SignOutputRawResponse struct {
+	Signature            []byte   `protobuf:"bytes,1,opt,name=signature,proto3" json:"signature,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *SignOutputRawResponse) Reset()         { *m = SignOutputRawResponse{} }
+func (m *SignOutputRawResponse) String() string { return proto.CompactTextString(m) }
+func (*SignOutputRawResponse) ProtoMessage()    {}
+func (*SignOutputRawResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{14}
+}
+
+func (m *SignOutputRawResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignOutputRawResponse.Unmarshal(m, b)
+}
+func (m *SignOutputRawResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignOutputRawResponse.Marshal(b, m, deterministic)
+}
+func (m *SignOutputRawResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignOutputRawResponse.Merge(m, src)
+}
+func (m *SignOutputRawResponse) XXX_Size() int {
+	return xxx_messageInfo_SignOutputRawResponse.Size(m)
+}
+func (m *SignOutputRawResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignOutputRawResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignOutputRawResponse proto.InternalMessageInfo
+
+func (m *SignOutputRawResponse) GetSignature() []byte {
+	if m != nil {
+		return m.Signature
+	}
+	return nil
+}
+
+type Transaction struct {
+	Version              int32                `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Inputs               []*TransactionInput  `protobuf:"bytes,2,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	Outputs              []*TransactionOutput `protobuf:"bytes,3,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	LockTime             uint32               `protobuf:"varint,4,opt,name=lockTime,proto3" json:"lockTime,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}             `json:"-"`
+	XXX_unrecognized     []byte               `json:"-"`
+	XXX_sizecache        int32                `json:"-"`
+}
+
+func (m *Transaction) Reset()         { *m = Transaction{} }
+func (m *Transaction) String() string { return proto.CompactTextString(m) }
+func (*Transaction) ProtoMessage()    {}
+func (*Transaction) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{15}
+}
+
+func (m *Transaction) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_Transaction.Unmarshal(m, b)
+}
+func (m *Transaction) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_Transaction.Marshal(b, m, deterministic)
+}
+func (m *Transaction) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_Transaction.Merge(m, src)
+}
+func (m *Transaction) XXX_Size() int {
+	return xxx_messageInfo_Transaction.Size(m)
+}
+func (m *Transaction) XXX_DiscardUnknown() {
+	xxx_messageInfo_Transaction.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_Transaction proto.InternalMessageInfo
+
+func (m *Transaction) GetVersion() int32 {
+	if m != nil {
+		return m.Version
+	}
+	return 0
+}
+
+func (m *Transaction) GetInputs() []*TransactionInput {
+	if m != nil {
+		return m.Inputs
+	}
+	return nil
+}
+
+func (m *Transaction) GetOutputs() []*TransactionOutput {
+	if m != nil {
+		return m.Outputs
+	}
+	return nil
+}
+
+func (m *Transaction) GetLockTime() uint32 {
+	if m != nil {
+		return m.LockTime
+	}
+	return 0
+}
+
+type TransactionInput struct {
+	TransactionHash      []byte   `protobuf:"bytes,1,opt,name=transactionHash,proto3" json:"transactionHash,omitempty"`
+	Index                uint32   `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	SignatureScript      []byte   `protobuf:"bytes,3,opt,name=signatureScript,proto3" json:"signatureScript,omitempty"`
+	Witness              [][]byte `protobuf:"bytes,4,rep,name=witness,proto3" json:"witness,omitempty"`
+	Sequence             uint32   `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *TransactionInput) Reset()         { *m = TransactionInput{} }
+func (m *TransactionInput) String() string { return proto.CompactTextString(m) }
+func (*TransactionInput) ProtoMessage()    {}
+func (*TransactionInput) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{16}
+}
+
+func (m *TransactionInput) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_TransactionInput.Unmarshal(m, b)
+}
+func (m *TransactionInput) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_TransactionInput.Marshal(b, m, deterministic)
+}
+func (m *TransactionInput) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_TransactionInput.Merge(m, src)
+}
+func (m *TransactionInput) XXX_Size() int {
+	return xxx_messageInfo_TransactionInput.Size(m)
+}
+func (m *TransactionInput) XXX_DiscardUnknown() {
+	xxx_messageInfo_TransactionInput.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_TransactionInput proto.InternalMessageInfo
+
+func (m *TransactionInput) GetTransactionHash() []byte {
+	if m != nil {
+		return m.TransactionHash
+	}
+	return nil
+}
+
+func (m *TransactionInput) GetIndex() uint32 {
+	if m != nil {
+		return m.Index
+	}
+	return 0
+}
+
+func (m *TransactionInput) GetSignatureScript() []byte {
+	if m != nil {
+		return m.SignatureScript
+	}
+	return nil
+}
+
+func (m *TransactionInput) GetWitness() [][]byte {
+	if m != nil {
+		return m.Witness
+	}
+	return nil
+}
+
+func (m *TransactionInput) GetSequence() uint32 {
+	if m != nil {
+		return m.Sequence
+	}
+	return 0
+}
+
+type TransactionOutput struct {
+	Value                int64    `protobuf:"varint,1,opt,name=value,proto3" json:"value,omitempty"`
+	PkScript             []byte   `protobuf:"bytes,2,opt,name=pkScript,proto3" json:"pkScript,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *TransactionOutput) Reset()         { *m = TransactionOutput{} }
+func (m *TransactionOutput) String() string { return proto.CompactTextString(m) }
+func (*TransactionOutput) ProtoMessage()    {}
+func (*TransactionOutput) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{17}
+}
+
+func (m *TransactionOutput) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_TransactionOutput.Unmarshal(m, b)
+}
+func (m *TransactionOutput) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_TransactionOutput.Marshal(b, m, deterministic)
+}
+func (m *TransactionOutput) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_TransactionOutput.Merge(m, src)
+}
+func (m *TransactionOutput) XXX_Size() int {
+	return xxx_messageInfo_TransactionOutput.Size(m)
+}
+func (m *TransactionOutput) XXX_DiscardUnknown() {
+	xxx_messageInfo_TransactionOutput.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_TransactionOutput proto.InternalMessageInfo
+
+func (m *TransactionOutput) GetValue() int64 {
+	if m != nil {
+		return m.Value
+	}
+	return 0
+}
+
+func (m *TransactionOutput) GetPkScript() []byte {
+	if m != nil {
+		return m.PkScript
+	}
+	return nil
+}
+
+type SignDescriptor struct {
+	KeyDescriptor        *KeyDescriptor        `protobuf:"bytes,1,opt,name=keyDescriptor,proto3" json:"keyDescriptor,omitempty"`
+	SingleTweak          []byte                `protobuf:"bytes,2,opt,name=singleTweak,proto3" json:"singleTweak,omitempty"`
+	DoubleTweak          []byte                `protobuf:"bytes,3,opt,name=doubleTweak,proto3" json:"doubleTweak,omitempty"`
+	WitnessScript        []byte                `protobuf:"bytes,4,opt,name=witnessScript,proto3" json:"witnessScript,omitempty"`
+	Output               *TransactionOutput    `protobuf:"bytes,5,opt,name=output,proto3" json:"output,omitempty"`
+	HashType             uint32                `protobuf:"varint,6,opt,name=hashType,proto3" json:"hashType,omitempty"`
+	SigHashes            *TransactionSigHashes `protobuf:"bytes,7,opt,name=sigHashes,proto3" json:"sigHashes,omitempty"`
+	InputIndex           uint32                `protobuf:"varint,8,opt,name=inputIndex,proto3" json:"inputIndex,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}              `json:"-"`
+	XXX_unrecognized     []byte                `json:"-"`
+	XXX_sizecache        int32                 `json:"-"`
+}
+
+func (m *SignDescriptor) Reset()         { *m = SignDescriptor{} }
+func (m *SignDescriptor) String() string { return proto.CompactTextString(m) }
+func (*SignDescriptor) ProtoMessage()    {}
+func (*SignDescriptor) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{18}
+}
+
+func (m *SignDescriptor) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SignDescriptor.Unmarshal(m, b)
+}
+func (m *SignDescriptor) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SignDescriptor.Marshal(b, m, deterministic)
+}
+func (m *SignDescriptor) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SignDescriptor.Merge(m, src)
+}
+func (m *SignDescriptor) XXX_Size() int {
+	return xxx_messageInfo_SignDescriptor.Size(m)
+}
+func (m *SignDescriptor) XXX_DiscardUnknown() {
+	xxx_messageInfo_SignDescriptor.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SignDescriptor proto.InternalMessageInfo
+
+func (m *SignDescriptor) GetKeyDescriptor() *KeyDescriptor {
+	if m != nil {
+		return m.KeyDescriptor
+	}
+	return nil
+}
+
+func (m *SignDescriptor) GetSingleTweak() []byte {
+	if m != nil {
+		return m.SingleTweak
+	}
+	return nil
+}
+
+func (m *SignDescriptor) GetDoubleTweak() []byte {
+	if m != nil {
+		return m.DoubleTweak
+	}
+	return nil
+}
+
+func (m *SignDescriptor) GetWitnessScript() []byte {
+	if m != nil {
+		return m.WitnessScript
+	}
+	return nil
+}
+
+func (m *SignDescriptor) GetOutput() *TransactionOutput {
+	if m != nil {
+		return m.Output
+	}
+	return nil
+}
+
+func (m *SignDescriptor) GetHashType() uint32 {
+	if m != nil {
+		return m.HashType
+	}
+	return 0
+}
+
+func (m *SignDescriptor) GetSigHashes() *TransactionSigHashes {
+	if m != nil {
+		return m.SigHashes
+	}
+	return nil
+}
+
+func (m *SignDescriptor) GetInputIndex() uint32 {
+	if m != nil {
+		return m.InputIndex
+	}
+	return 0
+}
+
+type KeyDescriptor struct {
+	KeyLocator           *KeyLocator `protobuf:"bytes,1,opt,name=keyLocator,proto3" json:"keyLocator,omitempty"`
+	PublicKey            []byte      `protobuf:"bytes,2,opt,name=publicKey,proto3" json:"publicKey,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}    `json:"-"`
+	XXX_unrecognized     []byte      `json:"-"`
+	XXX_sizecache        int32       `json:"-"`
+}
+
+func (m *KeyDescriptor) Reset()         { *m = KeyDescriptor{} }
+func (m *KeyDescriptor) String() string { return proto.CompactTextString(m) }
+func (*KeyDescriptor) ProtoMessage()    {}
+func (*KeyDescriptor) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{19}
+}
+
+func (m *KeyDescriptor) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_KeyDescriptor.Unmarshal(m, b)
+}
+func (m *KeyDescriptor) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_KeyDescriptor.Marshal(b, m, deterministic)
+}
+func (m *KeyDescriptor) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_KeyDescriptor.Merge(m, src)
+}
+func (m *KeyDescriptor) XXX_Size() int {
+	return xxx_messageInfo_KeyDescriptor.Size(m)
+}
+func (m *KeyDescriptor) XXX_DiscardUnknown() {
+	xxx_messageInfo_KeyDescriptor.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_KeyDescriptor proto.InternalMessageInfo
+
+func (m *KeyDescriptor) GetKeyLocator() *KeyLocator {
+	if m != nil {
+		return m.KeyLocator
+	}
+	return nil
+}
+
+func (m *KeyDescriptor) GetPublicKey() []byte {
+	if m != nil {
+		return m.PublicKey
+	}
+	return nil
+}
+
+type KeyLocator struct {
+	// BIP43 path: m/1017'/coinType'/keyFamily/0/index
+	KeyFamily            uint32   `protobuf:"varint,1,opt,name=keyFamily,proto3" json:"keyFamily,omitempty"`
+	Index                uint32   `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *KeyLocator) Reset()         { *m = KeyLocator{} }
+func (m *KeyLocator) String() string { return proto.CompactTextString(m) }
+func (*KeyLocator) ProtoMessage()    {}
+func (*KeyLocator) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{20}
+}
+
+func (m *KeyLocator) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_KeyLocator.Unmarshal(m, b)
+}
+func (m *KeyLocator) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_KeyLocator.Marshal(b, m, deterministic)
+}
+func (m *KeyLocator) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_KeyLocator.Merge(m, src)
+}
+func (m *KeyLocator) XXX_Size() int {
+	return xxx_messageInfo_KeyLocator.Size(m)
+}
+func (m *KeyLocator) XXX_DiscardUnknown() {
+	xxx_messageInfo_KeyLocator.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_KeyLocator proto.InternalMessageInfo
+
+func (m *KeyLocator) GetKeyFamily() uint32 {
+	if m != nil {
+		return m.KeyFamily
+	}
+	return 0
+}
+
+func (m *KeyLocator) GetIndex() uint32 {
+	if m != nil {
+		return m.Index
+	}
+	return 0
+}
+
+type TransactionSigHashes struct {
+	HashPrevOuts         []byte   `protobuf:"bytes,1,opt,name=hashPrevOuts,proto3" json:"hashPrevOuts,omitempty"`
+	HashSequence         []byte   `protobuf:"bytes,2,opt,name=hashSequence,proto3" json:"hashSequence,omitempty"`
+	HashOutputs          []byte   `protobuf:"bytes,3,opt,name=hashOutputs,proto3" json:"hashOutputs,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *TransactionSigHashes) Reset()         { *m = TransactionSigHashes{} }
+func (m *TransactionSigHashes) String() string { return proto.CompactTextString(m) }
+func (*TransactionSigHashes) ProtoMessage()    {}
+func (*TransactionSigHashes) Descriptor() ([]byte, []int) {
+	return fileDescriptor_2d4b5db5d7eac1f0, []int{21}
+}
+
+func (m *TransactionSigHashes) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_TransactionSigHashes.Unmarshal(m, b)
+}
+func (m *TransactionSigHashes) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_TransactionSigHashes.Marshal(b, m, deterministic)
+}
+func (m *TransactionSigHashes) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_TransactionSigHashes.Merge(m, src)
+}
+func (m *TransactionSigHashes) XXX_Size() int {
+	return xxx_messageInfo_TransactionSigHashes.Size(m)
+}
+func (m *TransactionSigHashes) XXX_DiscardUnknown() {
+	xxx_messageInfo_TransactionSigHashes.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_TransactionSigHashes proto.InternalMessageInfo
+
+func (m *TransactionSigHashes) GetHashPrevOuts() []byte {
+	if m != nil {
+		return m.HashPrevOuts
+	}
+	return nil
+}
+
+func (m *TransactionSigHashes) GetHashSequence() []byte {
+	if m != nil {
+		return m.HashSequence
+	}
+	return nil
+}
+
+func (m *TransactionSigHashes) GetHashOutputs() []byte {
+	if m != nil {
+		return m.HashOutputs
+	}
+	return nil
+}
+
 func init() {
 	proto.RegisterType((*SignMessageRequest)(nil), "SignMessageRequest")
 	proto.RegisterType((*SignMessageResponse)(nil), "SignMessageResponse")
@@ -628,47 +1140,81 @@ func init() {
 	proto.RegisterType((*NewAddressResponse)(nil), "NewAddressResponse")
 	proto.RegisterType((*FetchInputInfoRequest)(nil), "FetchInputInfoRequest")
 	proto.RegisterType((*FetchInputInfoResponse)(nil), "FetchInputInfoResponse")
+	proto.RegisterType((*SignOutputRawRequest)(nil), "SignOutputRawRequest")
+	proto.RegisterType((*SignOutputRawResponse)(nil), "SignOutputRawResponse")
+	proto.RegisterType((*Transaction)(nil), "Transaction")
+	proto.RegisterType((*TransactionInput)(nil), "TransactionInput")
+	proto.RegisterType((*TransactionOutput)(nil), "TransactionOutput")
+	proto.RegisterType((*SignDescriptor)(nil), "SignDescriptor")
+	proto.RegisterType((*KeyDescriptor)(nil), "KeyDescriptor")
+	proto.RegisterType((*KeyLocator)(nil), "KeyLocator")
+	proto.RegisterType((*TransactionSigHashes)(nil), "TransactionSigHashes")
 }
 
 func init() { proto.RegisterFile("pine.proto", fileDescriptor_2d4b5db5d7eac1f0) }
 
 var fileDescriptor_2d4b5db5d7eac1f0 = []byte{
-	// 549 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xa4, 0x54, 0x4d, 0x6f, 0xd3, 0x40,
-	0x10, 0xcd, 0x77, 0xdb, 0x49, 0xc3, 0xc7, 0x24, 0x75, 0x8d, 0xcb, 0xa1, 0x5a, 0x71, 0x88, 0x38,
-	0xec, 0xa1, 0x3d, 0x20, 0x90, 0x50, 0x55, 0x55, 0x42, 0x14, 0x02, 0x45, 0x2e, 0x11, 0x67, 0xd7,
-	0xd9, 0x26, 0xab, 0x26, 0xbb, 0xc6, 0xbb, 0x2e, 0xe9, 0x0f, 0xe1, 0xef, 0xf0, 0xdb, 0x90, 0x77,
-	0x9d, 0xc6, 0x8e, 0x9d, 0x03, 0xe2, 0xb6, 0xf3, 0x3c, 0x79, 0xf3, 0xf1, 0xde, 0x04, 0x20, 0xe2,
-	0x82, 0xd1, 0x28, 0x96, 0x5a, 0x92, 0x11, 0xe0, 0x35, 0x9f, 0x8a, 0x2f, 0x4c, 0xa9, 0x60, 0xca,
-	0x7c, 0xf6, 0x33, 0x61, 0x4a, 0xa3, 0x0b, 0x3b, 0x0b, 0x8b, 0xb8, 0xf5, 0xe3, 0xfa, 0x70, 0xdf,
-	0x5f, 0x85, 0xf8, 0x12, 0xf6, 0xa2, 0xe4, 0x66, 0xce, 0xc3, 0xcf, 0xec, 0xc1, 0x6d, 0x98, 0x6f,
-	0x6b, 0x80, 0x9c, 0x42, 0xbf, 0xc0, 0xa6, 0x22, 0x29, 0x94, 0xf9, 0x91, 0xe2, 0x53, 0x11, 0xe8,
-	0x24, 0x5e, 0x11, 0xae, 0x01, 0xa2, 0xe0, 0xc5, 0x88, 0x2b, 0x3d, 0x16, 0x2a, 0x62, 0x42, 0xff,
-	0xe0, 0x5a, 0x30, 0xa5, 0x56, 0x9d, 0xbc, 0x86, 0x67, 0x0b, 0x2e, 0x2e, 0xa4, 0xb8, 0xe5, 0xf1,
-	0x22, 0xd0, 0x5c, 0x0a, 0x65, 0x18, 0xda, 0x7e, 0x09, 0x37, 0xb9, 0xc1, 0xb2, 0x98, 0xdb, 0xc8,
-	0x72, 0x37, 0x70, 0xf2, 0x16, 0xbc, 0xaa, 0xa2, 0x59, 0xc3, 0x47, 0xd0, 0x4e, 0xf4, 0x52, 0xa6,
-	0xa5, 0x9a, 0xc3, 0xee, 0x49, 0x9b, 0x8e, 0xf5, 0x52, 0xfa, 0x16, 0x23, 0x7f, 0xea, 0xd0, 0x4a,
-	0x63, 0x3c, 0x86, 0x6e, 0x30, 0x99, 0xc4, 0x4c, 0xa9, 0xef, 0x0f, 0x91, 0x1d, 0xac, 0xe7, 0xe7,
-	0x21, 0x1c, 0x40, 0xfb, 0x3e, 0x98, 0x27, 0xcc, 0xb4, 0xd1, 0xf4, 0x6d, 0x80, 0xaf, 0xa0, 0x17,
-	0x16, 0x9a, 0x6c, 0x9a, 0xaf, 0x45, 0x10, 0x3d, 0xd8, 0x8d, 0xee, 0xae, 0xc3, 0x98, 0x47, 0xda,
-	0x6d, 0x99, 0x9d, 0x3d, 0xc6, 0x38, 0x84, 0xa7, 0x3a, 0x0e, 0x84, 0x0a, 0xc2, 0x34, 0xf7, 0x63,
-	0xa0, 0x66, 0x6e, 0xdb, 0xa4, 0x6c, 0xc2, 0x88, 0xd0, 0xba, 0x97, 0x89, 0x76, 0x3b, 0xa6, 0x39,
-	0xf3, 0x26, 0x67, 0xd0, 0x1f, 0xc9, 0xf0, 0xee, 0x2a, 0xd1, 0x91, 0xe4, 0x42, 0xaf, 0x56, 0x8d,
-	0xd0, 0x9a, 0xa5, 0x4c, 0x56, 0x20, 0xf3, 0x4e, 0x07, 0xe0, 0x62, 0xc2, 0x96, 0x66, 0x80, 0x9e,
-	0x6f, 0x03, 0xe2, 0xc0, 0xa0, 0x48, 0x60, 0xd7, 0x46, 0xce, 0xe1, 0x60, 0x2c, 0xe6, 0xff, 0x45,
-	0xed, 0x82, 0xb3, 0x49, 0x91, 0x91, 0x9f, 0xc1, 0xf3, 0xaf, 0xec, 0xd7, 0xb9, 0xdd, 0x6e, 0x8e,
-	0x58, 0xaf, 0x77, 0x6f, 0xde, 0xe8, 0x40, 0x27, 0x9c, 0x05, 0x62, 0x6a, 0xb7, 0xbe, 0xeb, 0x67,
-	0x11, 0xa1, 0x80, 0x79, 0x82, 0x4c, 0x6a, 0x17, 0x76, 0x32, 0xc5, 0x0c, 0xc9, 0x9e, 0xbf, 0x0a,
-	0xd3, 0x69, 0x3e, 0x30, 0x1d, 0xce, 0x2e, 0x45, 0x94, 0xe8, 0x4b, 0x71, 0x2b, 0xff, 0x7d, 0x9a,
-	0x4f, 0xe0, 0x6c, 0x52, 0x64, 0x65, 0x1f, 0x9d, 0x51, 0xcf, 0x3b, 0x23, 0xaf, 0x79, 0xa3, 0xa8,
-	0xf9, 0xc9, 0xef, 0x26, 0xb4, 0xbe, 0x71, 0xc1, 0xf0, 0x1d, 0x74, 0x73, 0x47, 0x86, 0x7d, 0x5a,
-	0x3e, 0x60, 0x6f, 0x40, 0x2b, 0xee, 0x90, 0xd4, 0xf0, 0x0a, 0xb0, 0x6c, 0x7b, 0xf4, 0xe8, 0xd6,
-	0x03, 0xf4, 0x8e, 0xe8, 0xf6, 0x3b, 0x21, 0x35, 0x7c, 0x0f, 0xfb, 0x79, 0x2b, 0xe0, 0x80, 0x56,
-	0x58, 0xcb, 0x3b, 0xa0, 0x95, 0x7e, 0xa9, 0xe1, 0x05, 0x3c, 0x29, 0xca, 0x8d, 0x0e, 0xad, 0xb4,
-	0x90, 0x77, 0x48, 0xb7, 0xf8, 0xa2, 0x86, 0x6f, 0x00, 0xd6, 0xc2, 0x22, 0xd2, 0x92, 0x4d, 0xbc,
-	0x3e, 0x2d, 0x2b, 0x6f, 0xab, 0x17, 0xe5, 0x41, 0x87, 0x56, 0x4a, 0xee, 0x1d, 0xd2, 0x6a, 0x1d,
-	0x49, 0xed, 0xa6, 0x63, 0xfe, 0x48, 0x4f, 0xff, 0x06, 0x00, 0x00, 0xff, 0xff, 0x57, 0x24, 0x40,
-	0x97, 0x56, 0x05, 0x00, 0x00,
+	// 960 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xa4, 0x56, 0xcd, 0x6e, 0x23, 0x45,
+	0x10, 0xf6, 0x7f, 0xb2, 0xe5, 0x38, 0xbb, 0xa9, 0xd8, 0xde, 0x61, 0x16, 0xa1, 0xa8, 0xc5, 0x21,
+	0x2c, 0xa8, 0x0f, 0x09, 0x68, 0x05, 0x12, 0xda, 0x5d, 0x2d, 0xac, 0x58, 0x12, 0xc8, 0xaa, 0x9d,
+	0x08, 0x89, 0xdb, 0xc4, 0xe9, 0x75, 0x5a, 0xb6, 0x7b, 0x06, 0x77, 0x4f, 0x12, 0x9f, 0xe0, 0x41,
+	0x78, 0x0a, 0x1e, 0x80, 0x37, 0xe0, 0xcc, 0xeb, 0xa0, 0xee, 0x9e, 0xf1, 0xf4, 0xd8, 0x13, 0xf1,
+	0x77, 0x9b, 0xfa, 0xe6, 0x9b, 0xea, 0xaa, 0xaf, 0xba, 0xaa, 0x06, 0x20, 0x11, 0x92, 0xd3, 0x64,
+	0x11, 0xeb, 0x98, 0x9c, 0x02, 0x8e, 0xc4, 0x44, 0x7e, 0xc7, 0x95, 0x8a, 0x26, 0x9c, 0xf1, 0x9f,
+	0x52, 0xae, 0x34, 0x06, 0xb0, 0x35, 0x77, 0x48, 0x50, 0x3f, 0xa8, 0x1f, 0xee, 0xb0, 0xdc, 0xc4,
+	0xf7, 0xe1, 0x41, 0x92, 0x5e, 0xce, 0xc4, 0xf8, 0x84, 0x2f, 0x83, 0x86, 0x7d, 0x57, 0x00, 0xe4,
+	0x18, 0xf6, 0x4b, 0xde, 0x54, 0x12, 0x4b, 0x65, 0x3f, 0x52, 0x62, 0x22, 0x23, 0x9d, 0x2e, 0x72,
+	0x87, 0x05, 0x40, 0x14, 0xbc, 0x77, 0x2a, 0x94, 0xbe, 0x90, 0x2a, 0xe1, 0x52, 0xff, 0x20, 0xb4,
+	0xe4, 0x4a, 0xe5, 0x91, 0x3c, 0x85, 0x47, 0x73, 0x21, 0x5f, 0xc5, 0xf2, 0x9d, 0x58, 0xcc, 0x23,
+	0x2d, 0x62, 0xa9, 0xac, 0x87, 0x36, 0xdb, 0xc0, 0x2d, 0x37, 0xba, 0x2b, 0x73, 0x1b, 0x19, 0x77,
+	0x0d, 0x27, 0x9f, 0x43, 0x58, 0x75, 0x68, 0x16, 0xf0, 0x13, 0x68, 0xa7, 0xfa, 0x2e, 0x36, 0x47,
+	0x35, 0x0f, 0xbb, 0x47, 0x6d, 0x7a, 0xa1, 0xef, 0x62, 0xe6, 0x30, 0xf2, 0x7b, 0x1d, 0x5a, 0xc6,
+	0xc6, 0x03, 0xe8, 0x46, 0x57, 0x57, 0x0b, 0xae, 0xd4, 0xf9, 0x32, 0x71, 0x89, 0xf5, 0x98, 0x0f,
+	0x61, 0x1f, 0xda, 0x37, 0xd1, 0x2c, 0xe5, 0x36, 0x8c, 0x26, 0x73, 0x06, 0x7e, 0x08, 0xbd, 0x71,
+	0x29, 0xc8, 0xa6, 0x7d, 0x5b, 0x06, 0x31, 0x84, 0xed, 0x64, 0x3a, 0x1a, 0x2f, 0x44, 0xa2, 0x83,
+	0x96, 0xd5, 0x6c, 0x65, 0xe3, 0x21, 0x3c, 0xd4, 0x8b, 0x48, 0xaa, 0x68, 0x6c, 0xb8, 0xdf, 0x44,
+	0xea, 0x3a, 0x68, 0x5b, 0xca, 0x3a, 0x8c, 0x08, 0xad, 0x9b, 0x38, 0xd5, 0x41, 0xc7, 0x06, 0x67,
+	0x9f, 0xc9, 0x73, 0xd8, 0x3f, 0x8d, 0xc7, 0xd3, 0xb3, 0x54, 0x27, 0xb1, 0x90, 0x3a, 0x97, 0x1a,
+	0xa1, 0x75, 0x6d, 0x3c, 0xb9, 0x02, 0xd9, 0x67, 0x93, 0x80, 0x90, 0x57, 0xfc, 0xce, 0x26, 0xd0,
+	0x63, 0xce, 0x20, 0x43, 0xe8, 0x97, 0x1d, 0x38, 0xd9, 0xc8, 0x4b, 0x18, 0x5c, 0xc8, 0xd9, 0xff,
+	0x72, 0x1d, 0xc0, 0x70, 0xdd, 0x45, 0xe6, 0xfc, 0x39, 0xec, 0x7d, 0xcf, 0x6f, 0x5f, 0x3a, 0x75,
+	0x3d, 0xc7, 0xba, 0xd0, 0xde, 0x3e, 0xe3, 0x10, 0x3a, 0xe3, 0xeb, 0x48, 0x4e, 0x9c, 0xea, 0xdb,
+	0x2c, 0xb3, 0x08, 0x05, 0xf4, 0x1d, 0x64, 0xa5, 0x0e, 0x60, 0x2b, 0xab, 0x98, 0x75, 0xf2, 0x80,
+	0xe5, 0xa6, 0xc9, 0xe6, 0x35, 0xd7, 0xe3, 0xeb, 0x37, 0x32, 0x49, 0xf5, 0x1b, 0xf9, 0x2e, 0xfe,
+	0xf7, 0xd9, 0x7c, 0x0b, 0xc3, 0x75, 0x17, 0xd9, 0xb1, 0xab, 0x9b, 0x51, 0xf7, 0x6f, 0x86, 0x5f,
+	0xf3, 0x46, 0xb9, 0xe6, 0xe4, 0x67, 0xe8, 0x9b, 0xde, 0x32, 0xba, 0xa4, 0x9a, 0x45, 0xb7, 0x79,
+	0x34, 0x14, 0xba, 0x5e, 0xd1, 0xad, 0xbf, 0xee, 0xd1, 0x0e, 0x3d, 0x2f, 0x30, 0xe6, 0x13, 0xf0,
+	0x19, 0xec, 0x9a, 0xde, 0xfb, 0x8a, 0x2b, 0xeb, 0x37, 0x5e, 0xd8, 0x93, 0xba, 0x47, 0x0f, 0xe9,
+	0xa8, 0x04, 0xb3, 0x35, 0x1a, 0xf9, 0x0c, 0x06, 0x6b, 0x01, 0xfc, 0xa3, 0xf6, 0xfe, 0xb5, 0x0e,
+	0x5d, 0x2f, 0x18, 0x23, 0xf8, 0x0d, 0x5f, 0xa8, 0x3c, 0xd6, 0x36, 0xcb, 0x4d, 0xfc, 0x08, 0x3a,
+	0xc2, 0x08, 0x65, 0xba, 0xd6, 0xb4, 0xdd, 0x9e, 0x9f, 0x84, 0x95, 0x90, 0x65, 0x04, 0xfc, 0x04,
+	0xb6, 0x62, 0x1b, 0x87, 0x69, 0x1e, 0xc3, 0x45, 0x9f, 0x9b, 0x85, 0x98, 0x53, 0x8c, 0xac, 0xe6,
+	0x4a, 0x9d, 0x8b, 0x39, 0xb7, 0xad, 0xd4, 0x63, 0x2b, 0x9b, 0xfc, 0x56, 0x87, 0x47, 0xeb, 0xc7,
+	0x54, 0xf5, 0x57, 0xbd, 0xba, 0xbf, 0x2a, 0xeb, 0x6e, 0xbe, 0x5f, 0x09, 0x90, 0x95, 0xb3, 0xe9,
+	0xbe, 0x5f, 0x83, 0x8d, 0x1a, 0xb7, 0x6e, 0xf8, 0x04, 0xad, 0x83, 0xa6, 0x99, 0xb4, 0x99, 0x69,
+	0x82, 0x56, 0xa6, 0xc4, 0x72, 0xcc, 0x6d, 0x73, 0xf7, 0xd8, 0xca, 0x26, 0x5f, 0xc3, 0xde, 0x46,
+	0xba, 0xff, 0xe1, 0x4a, 0xfd, 0xd1, 0x80, 0xdd, 0x72, 0xd1, 0xf1, 0x53, 0xe8, 0x4d, 0xf9, 0xd2,
+	0xbb, 0x1c, 0xee, 0x3e, 0xed, 0xd2, 0x13, 0x1f, 0x65, 0x65, 0x92, 0x99, 0x84, 0x4a, 0xc8, 0xc9,
+	0x8c, 0x9f, 0xdf, 0xf2, 0x68, 0x9a, 0x9d, 0xe3, 0x43, 0x86, 0x71, 0x15, 0xa7, 0x97, 0x39, 0xc3,
+	0xa9, 0xe1, 0x43, 0x66, 0x2a, 0x66, 0xa9, 0x97, 0x86, 0x5e, 0x19, 0xc4, 0xa7, 0xd0, 0x71, 0x55,
+	0xb5, 0x9a, 0x54, 0xd7, 0x3d, 0x63, 0x98, 0xd4, 0x4d, 0x6f, 0xda, 0xe1, 0xec, 0xe6, 0xdf, 0xca,
+	0xc6, 0x63, 0x7b, 0x67, 0x4d, 0x09, 0xb9, 0x0a, 0xb6, 0xac, 0xab, 0x81, 0xef, 0x6a, 0x94, 0xbf,
+	0x64, 0x05, 0x0f, 0x3f, 0x00, 0x10, 0xae, 0x93, 0x4d, 0xc5, 0xb7, 0xad, 0x4b, 0x0f, 0x21, 0x3f,
+	0x42, 0xaf, 0x24, 0x13, 0x7e, 0x0c, 0x30, 0xe5, 0xcb, 0xd3, 0x78, 0x1c, 0x15, 0x52, 0x76, 0x8d,
+	0x94, 0x19, 0xc4, 0xbc, 0xd7, 0x7f, 0xb3, 0x5a, 0x5f, 0x00, 0x9c, 0x94, 0xb8, 0x53, 0xbe, 0x7c,
+	0x1d, 0xcd, 0xc5, 0x6c, 0x99, 0x0d, 0xbf, 0x02, 0xb8, 0x67, 0x18, 0xfd, 0x52, 0x87, 0x7e, 0x55,
+	0x86, 0x48, 0x60, 0xc7, 0xe8, 0xf2, 0x76, 0xc1, 0x6f, 0xce, 0x4c, 0x47, 0xb9, 0xab, 0x5e, 0xc2,
+	0x72, 0xce, 0x28, 0xbf, 0x91, 0x8d, 0x82, 0x93, 0x63, 0xa6, 0xc6, 0xc6, 0x3e, 0x5b, 0x35, 0xa6,
+	0xad, 0xb1, 0x07, 0x1d, 0xfd, 0xd9, 0x84, 0xd6, 0x5b, 0x21, 0x39, 0x7e, 0x01, 0x5d, 0xef, 0x47,
+	0x01, 0xf7, 0xe9, 0xe6, 0x4f, 0x48, 0xd8, 0xa7, 0x15, 0xff, 0x12, 0xa4, 0x86, 0x67, 0x80, 0x9b,
+	0xab, 0x1b, 0x43, 0x7a, 0xef, 0x4f, 0x44, 0xf8, 0x84, 0xde, 0xbf, 0xeb, 0x49, 0x0d, 0xbf, 0x84,
+	0x1d, 0x7f, 0x9d, 0x61, 0x9f, 0x56, 0xac, 0xc7, 0x70, 0x40, 0x2b, 0x77, 0x5e, 0x0d, 0x5f, 0xc1,
+	0x6e, 0x79, 0x65, 0xe1, 0x90, 0x56, 0xae, 0xc1, 0xf0, 0x31, 0xbd, 0x67, 0xb7, 0xd5, 0xf0, 0x19,
+	0x40, 0xb1, 0x9c, 0x10, 0xe9, 0xc6, 0xaa, 0x0b, 0xf7, 0xe9, 0xe6, 0xf6, 0x72, 0xa7, 0x97, 0x57,
+	0x0c, 0x0e, 0x69, 0xe5, 0xda, 0x0a, 0x1f, 0xd3, 0xea, 0x5d, 0x44, 0x6a, 0xf8, 0x02, 0x7a, 0xa5,
+	0xd1, 0x8e, 0x03, 0x5a, 0xb5, 0x6b, 0xc2, 0x21, 0xad, 0xdc, 0x00, 0xa4, 0x76, 0xd9, 0xb1, 0xbf,
+	0x93, 0xc7, 0x7f, 0x05, 0x00, 0x00, 0xff, 0xff, 0xdf, 0x5c, 0x1e, 0xcd, 0x5c, 0x0a, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -695,6 +1241,8 @@ type PineClient interface {
 	NewAddress(ctx context.Context, in *NewAddressRequest, opts ...grpc.CallOption) (*NewAddressResponse, error)
 	// FetchInputInfo returns information about a transaction output.
 	FetchInputInfo(ctx context.Context, in *FetchInputInfoRequest, opts ...grpc.CallOption) (*FetchInputInfoResponse, error)
+	// SignOutputRaw signs a transaction.
+	SignOutputRaw(ctx context.Context, in *SignOutputRawRequest, opts ...grpc.CallOption) (*SignOutputRawResponse, error)
 }
 
 type pineClient struct {
@@ -759,6 +1307,15 @@ func (c *pineClient) FetchInputInfo(ctx context.Context, in *FetchInputInfoReque
 	return out, nil
 }
 
+func (c *pineClient) SignOutputRaw(ctx context.Context, in *SignOutputRawRequest, opts ...grpc.CallOption) (*SignOutputRawResponse, error) {
+	out := new(SignOutputRawResponse)
+	err := c.cc.Invoke(ctx, "/Pine/SignOutputRaw", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PineServer is the server API for Pine service.
 type PineServer interface {
 	SignMessage(context.Context, *SignMessageRequest) (*SignMessageResponse, error)
@@ -773,6 +1330,8 @@ type PineServer interface {
 	NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error)
 	// FetchInputInfo returns information about a transaction output.
 	FetchInputInfo(context.Context, *FetchInputInfoRequest) (*FetchInputInfoResponse, error)
+	// SignOutputRaw signs a transaction.
+	SignOutputRaw(context.Context, *SignOutputRawRequest) (*SignOutputRawResponse, error)
 }
 
 // UnimplementedPineServer can be embedded to have forward compatible implementations.
@@ -796,6 +1355,9 @@ func (*UnimplementedPineServer) NewAddress(ctx context.Context, req *NewAddressR
 }
 func (*UnimplementedPineServer) FetchInputInfo(ctx context.Context, req *FetchInputInfoRequest) (*FetchInputInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FetchInputInfo not implemented")
+}
+func (*UnimplementedPineServer) SignOutputRaw(ctx context.Context, req *SignOutputRawRequest) (*SignOutputRawResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignOutputRaw not implemented")
 }
 
 func RegisterPineServer(s *grpc.Server, srv PineServer) {
@@ -910,6 +1472,24 @@ func _Pine_FetchInputInfo_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Pine_SignOutputRaw_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignOutputRawRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PineServer).SignOutputRaw(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/Pine/SignOutputRaw",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PineServer).SignOutputRaw(ctx, req.(*SignOutputRawRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 var _Pine_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "Pine",
 	HandlerType: (*PineServer)(nil),
@@ -937,6 +1517,10 @@ var _Pine_serviceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FetchInputInfo",
 			Handler:    _Pine_FetchInputInfo_Handler,
+		},
+		{
+			MethodName: "SignOutputRaw",
+			Handler:    _Pine_SignOutputRaw_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

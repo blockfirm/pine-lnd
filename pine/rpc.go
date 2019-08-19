@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"google.golang.org/grpc"
 )
@@ -198,4 +199,83 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 
 	txOut := wire.NewTxOut(response.Value, response.PkScript)
 	return txOut, nil
+}
+
+// SignOutputRaw signs a transaction based on the passed sign descriptor.
+func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, error) {
+	fmt.Print("\n[PINE]: pine→SignOutputRaw\n")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	inputs := make([]*TransactionInput, len(tx.TxIn))
+	for index, input := range tx.TxIn {
+		inputs[index] = &TransactionInput{
+			TransactionHash: input.PreviousOutPoint.Hash.CloneBytes(),
+			Index:           input.PreviousOutPoint.Index,
+			SignatureScript: input.SignatureScript,
+			Witness:         input.Witness,
+			Sequence:        input.Sequence,
+		}
+	}
+
+	outputs := make([]*TransactionOutput, len(tx.TxOut))
+	for index, output := range tx.TxOut {
+		outputs[index] = &TransactionOutput{
+			Value:    output.Value,
+			PkScript: output.PkScript,
+		}
+	}
+
+	transaction := &Transaction{
+		Version:  tx.Version,
+		Inputs:   inputs,
+		Outputs:  outputs,
+		LockTime: tx.LockTime,
+	}
+
+	signDescriptor := &SignDescriptor{
+		KeyDescriptor: &KeyDescriptor{
+			KeyLocator: &KeyLocator{
+				KeyFamily: uint32(signDesc.KeyDesc.KeyLocator.Family),
+				Index:     signDesc.KeyDesc.KeyLocator.Index,
+			},
+		},
+		SingleTweak:   signDesc.SingleTweak,
+		WitnessScript: signDesc.WitnessScript,
+		Output: &TransactionOutput{
+			Value:    signDesc.Output.Value,
+			PkScript: signDesc.Output.PkScript,
+		},
+		HashType: uint32(signDesc.HashType),
+		SigHashes: &TransactionSigHashes{
+			HashPrevOuts: signDesc.SigHashes.HashPrevOuts.CloneBytes(),
+			HashSequence: signDesc.SigHashes.HashSequence.CloneBytes(),
+			HashOutputs:  signDesc.SigHashes.HashOutputs.CloneBytes(),
+		},
+		InputIndex: uint32(signDesc.InputIndex),
+	}
+
+	if signDesc.KeyDesc.PubKey != nil {
+		signDescriptor.KeyDescriptor.PublicKey = signDesc.KeyDesc.PubKey.SerializeCompressed()
+	}
+
+	if signDesc.DoubleTweak != nil {
+		signDescriptor.DoubleTweak = signDesc.DoubleTweak.Serialize()
+	}
+
+	request := &SignOutputRawRequest{
+		Transaction:    transaction,
+		SignDescriptor: signDescriptor,
+	}
+
+	response, err := client.SignOutputRaw(context.Background(), request)
+	if err != nil {
+		fmt.Printf("\nError when calling SignOutputRaw RPC\n")
+		return nil, err
+	}
+
+	return response.Signature, nil
 }
