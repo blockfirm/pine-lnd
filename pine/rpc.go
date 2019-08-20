@@ -25,7 +25,8 @@ func getClient() (PineClient, error) {
 
 	conn, err := grpc.Dial(rpcTarget, grpc.WithInsecure())
 	if err != nil {
-		fmt.Printf("\nError when connecting Pine RPC\n")
+		fmt.Println("Error when connecting Pine RPC:")
+		fmt.Println(err)
 		return nil, err
 	}
 
@@ -35,7 +36,7 @@ func getClient() (PineClient, error) {
 
 // SignMessage signs a message using the Pine Lightning API.
 func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) {
-	fmt.Print("\n[PINE]: pine→SignMessage\n")
+	fmt.Println("[PINE]: pine→SignMessage")
 
 	client, err := getClient()
 	if err != nil {
@@ -58,7 +59,7 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 // ListUnspentWitness returns a list of unspent transaction outputs using
 // the Pine Lightning API.
 func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
-	fmt.Print("\n[PINE]: pine→ListUnspentWitness\n")
+	fmt.Println("[PINE]: pine→ListUnspentWitness")
 
 	client, err := getClient()
 	if err != nil {
@@ -72,7 +73,8 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 	response, err := client.ListUnspentWitness(context.Background(), request)
 	if err != nil {
-		fmt.Printf("\nError when calling ListUnspentWitness RPC\n")
+		fmt.Println("Error when calling ListUnspentWitness RPC:")
+		fmt.Println(err)
 		return nil, err
 	}
 
@@ -82,7 +84,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 		transactionHash, err := chainhash.NewHash(utxo.TransactionHash)
 
 		if err != nil {
-			fmt.Printf("\nError when converting hash\n")
+			fmt.Println("Error when converting hash")
 			return nil, err
 		}
 
@@ -103,7 +105,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 // LockOutpoint marks an unspent transaction output as reserved.
 func LockOutpoint(o wire.OutPoint) error {
-	fmt.Print("\n[PINE]: pine→LockOutpoint\n")
+	fmt.Println("[PINE]: pine→LockOutpoint")
 
 	client, err := getClient()
 	if err != nil {
@@ -117,7 +119,8 @@ func LockOutpoint(o wire.OutPoint) error {
 
 	_, err = client.LockOutpoint(context.Background(), request)
 	if err != nil {
-		fmt.Printf("\nError when calling LockOutpoint RPC\n")
+		fmt.Println("Error when calling LockOutpoint RPC:")
+		fmt.Println(err)
 		return err
 	}
 
@@ -126,7 +129,7 @@ func LockOutpoint(o wire.OutPoint) error {
 
 // UnlockOutpoint unmarks an unspent transaction output as reserved.
 func UnlockOutpoint(o wire.OutPoint) error {
-	fmt.Print("\n[PINE]: pine→UnlockOutpoint\n")
+	fmt.Println("[PINE]: pine→UnlockOutpoint")
 
 	client, err := getClient()
 	if err != nil {
@@ -140,7 +143,8 @@ func UnlockOutpoint(o wire.OutPoint) error {
 
 	_, err = client.UnlockOutpoint(context.Background(), request)
 	if err != nil {
-		fmt.Printf("\nError when calling UnlockOutpoint RPC\n")
+		fmt.Println("Error when calling UnlockOutpoint RPC")
+		fmt.Println(err)
 		return err
 	}
 
@@ -149,7 +153,7 @@ func UnlockOutpoint(o wire.OutPoint) error {
 
 // NewAddress returns a new address.
 func NewAddress(t lnwallet.AddressType, change bool, netParams *chaincfg.Params) (btcutil.Address, error) {
-	fmt.Print("\n[PINE]: pine→NewAddress\n")
+	fmt.Println("[PINE]: pine→NewAddress")
 
 	client, err := getClient()
 	if err != nil {
@@ -163,13 +167,14 @@ func NewAddress(t lnwallet.AddressType, change bool, netParams *chaincfg.Params)
 
 	response, err := client.NewAddress(context.Background(), request)
 	if err != nil {
-		fmt.Printf("\nError when calling NewAddress RPC\n")
+		fmt.Println("Error when calling NewAddress RPC:")
+		fmt.Println(err)
 		return nil, err
 	}
 
 	address, err := btcutil.DecodeAddress(response.Address, netParams)
 	if err != nil {
-		fmt.Printf("\nError when decoding address\n")
+		fmt.Println("Error when decoding address")
 		return nil, err
 	}
 
@@ -179,7 +184,7 @@ func NewAddress(t lnwallet.AddressType, change bool, netParams *chaincfg.Params)
 // FetchInputInfo returns information about an unspent transaction input
 // belonging to this wallet.
 func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
-	fmt.Print("\n[PINE]: pine→FetchInputInfo\n")
+	fmt.Println("[PINE]: pine→FetchInputInfo")
 
 	client, err := getClient()
 	if err != nil {
@@ -193,7 +198,8 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 
 	response, err := client.FetchInputInfo(context.Background(), request)
 	if err != nil {
-		fmt.Printf("\nError when calling FetchInputInfo RPC\n")
+		fmt.Println("Error when calling FetchInputInfo RPC:")
+		fmt.Println(err)
 		return nil, err
 	}
 
@@ -203,13 +209,65 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 
 // SignOutputRaw signs a transaction based on the passed sign descriptor.
 func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, error) {
-	fmt.Print("\n[PINE]: pine→SignOutputRaw\n")
+	fmt.Println("[PINE]: pine→SignOutputRaw")
 
 	client, err := getClient()
 	if err != nil {
 		return nil, err
 	}
 
+	transaction := serializeMsgTx(tx)
+	signDescriptor := serializeSignDescriptor(signDesc)
+
+	request := &SignOutputRawRequest{
+		Transaction:    transaction,
+		SignDescriptor: signDescriptor,
+	}
+
+	response, err := client.SignOutputRaw(context.Background(), request)
+	if err != nil {
+		fmt.Println("Error when calling SignOutputRaw RPC:")
+		fmt.Println(err)
+		return nil, err
+	}
+
+	return response.Signature, nil
+}
+
+// ComputeInputScript returns an input script for the passed transaction and input.
+func ComputeInputScript(tx *wire.MsgTx, signDesc *input.SignDescriptor) (*input.Script, error) {
+	fmt.Println("[PINE]: pine→ComputeInputScript")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	transaction := serializeMsgTx(tx)
+	signDescriptor := serializeSignDescriptor(signDesc)
+
+	request := &ComputeInputScriptRequest{
+		Transaction:    transaction,
+		SignDescriptor: signDescriptor,
+	}
+
+	response, err := client.ComputeInputScript(context.Background(), request)
+	if err != nil {
+		fmt.Println("Error when calling ComputeInputScript RPC:")
+		fmt.Println(err)
+		return nil, err
+	}
+
+	inputScript := &input.Script{
+		Witness:   response.Witness,
+		SigScript: response.SignatureScript,
+	}
+
+	return inputScript, nil
+
+}
+
+func serializeMsgTx(tx *wire.MsgTx) *Transaction {
 	inputs := make([]*TransactionInput, len(tx.TxIn))
 	for index, input := range tx.TxIn {
 		inputs[index] = &TransactionInput{
@@ -236,6 +294,10 @@ func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, erro
 		LockTime: tx.LockTime,
 	}
 
+	return transaction
+}
+
+func serializeSignDescriptor(signDesc *input.SignDescriptor) *SignDescriptor {
 	signDescriptor := &SignDescriptor{
 		KeyDescriptor: &KeyDescriptor{
 			KeyLocator: &KeyLocator{
@@ -266,16 +328,5 @@ func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, erro
 		signDescriptor.DoubleTweak = signDesc.DoubleTweak.Serialize()
 	}
 
-	request := &SignOutputRawRequest{
-		Transaction:    transaction,
-		SignDescriptor: signDescriptor,
-	}
-
-	response, err := client.SignOutputRaw(context.Background(), request)
-	if err != nil {
-		fmt.Printf("\nError when calling SignOutputRaw RPC\n")
-		return nil, err
-	}
-
-	return response.Signature, nil
+	return signDescriptor
 }

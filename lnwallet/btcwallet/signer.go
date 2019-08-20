@@ -232,6 +232,7 @@ func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 // This is a part of the WalletController interface.
 func (b *BtcWallet) ComputeInputScript(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) (*input.Script, error) {
+	pine.ComputeInputScript(tx, signDesc)
 
 	outputScript := signDesc.Output.PkScript
 	walletAddr, err := b.fetchOutputAddr(outputScript)
