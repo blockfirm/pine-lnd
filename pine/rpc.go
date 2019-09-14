@@ -330,3 +330,27 @@ func serializeSignDescriptor(signDesc *input.SignDescriptor) *SignDescriptor {
 
 	return signDescriptor
 }
+
+// GetRevocationRootKey returns a new private key to be used as a revocation root.
+// TODO: This should be replaced with a new RPC method for getting revocation secrets.
+func GetRevocationRootKey() (*btcec.PrivateKey, error) {
+	fmt.Println("[PINE]: pine→GetRevocationRootKey")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	request := &GetRevocationRootKeyRequest{}
+
+	response, err := client.GetRevocationRootKey(context.Background(), request)
+	if err != nil {
+		fmt.Println("Error when calling GetRevocationRootKey RPC:")
+		fmt.Println(err)
+		return nil, err
+	}
+
+	privateKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), response.PrivateKey)
+
+	return privateKey, nil
+}
