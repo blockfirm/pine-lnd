@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/pine"
 	"github.com/lightningnetwork/lnd/shachain"
 )
 
@@ -533,7 +534,7 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 
 	// With the above keys created, we'll also need to initialization our
 	// initial revocation tree state.
-	nextRevocationKeyDesc, err := l.DeriveNextKey(
+	/*nextRevocationKeyDesc, err := l.DeriveNextKey(
 		keychain.KeyFamilyRevocationRoot,
 	)
 	if err != nil {
@@ -542,6 +543,12 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 		return
 	}
 	revocationRoot, err := l.DerivePrivKey(nextRevocationKeyDesc)
+	if err != nil {
+		req.err <- err
+		req.resp <- nil
+		return
+	}*/
+	revocationRoot, err := pine.GetRevocationRootKey()
 	if err != nil {
 		req.err <- err
 		req.resp <- nil
