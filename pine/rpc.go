@@ -340,3 +340,27 @@ func GetRevocationRootKey() (*btcec.PrivateKey, error) {
 
 	return privateKey, nil
 }
+
+// DeriveNextKey derives a new key from the specified key family.
+// No private keys are returned, only a key descriptor of one.
+func DeriveNextKey(keyFam uint32) (*KeyDescriptor, error) {
+	fmt.Println("[PINE]: pine→DeriveNextKey")
+
+	client, err := getClient()
+	if err != nil {
+		return &KeyDescriptor{}, err
+	}
+
+	request := &DeriveNextKeyRequest{
+		KeyFamily: keyFam,
+	}
+
+	response, err := client.DeriveNextKey(context.Background(), request)
+	if err != nil {
+		fmt.Println("Error when calling DeriveNextKey RPC:")
+		fmt.Println(err)
+		return &KeyDescriptor{}, err
+	}
+
+	return response.KeyDescriptor, nil
+}

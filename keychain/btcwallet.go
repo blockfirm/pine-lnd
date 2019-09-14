@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/lightningnetwork/lnd/pine"
 )
 
 const (
@@ -144,7 +145,27 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 		keyLoc KeyLocator
 	)
 
-	db := b.wallet.Database()
+	keyDescriptor, err := pine.DeriveNextKey(keyFam)
+	if err != nil {
+		return KeyDescriptor{}, err
+	}
+
+	pubKey, err = btcec.ParsePubKey(keyDescriptor.PublicKey, btcec.S256())
+	if err != nil {
+		return KeyDescriptor{}, err
+	}
+
+	keyLoc = KeyLocator{
+		Family: keyDescriptor.KeyLocator.KeyFamily,
+		Index:  keyDescriptor.KeyLocator.Index,
+	}
+
+	return KeyDescriptor{
+		PubKey:     pubKey,
+		KeyLocator: keyLoc,
+	}, nil
+
+	/*db := b.wallet.Database()
 	err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
 		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 
@@ -193,7 +214,7 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 	return KeyDescriptor{
 		PubKey:     pubKey,
 		KeyLocator: keyLoc,
-	}, nil
+	}, nil*/
 }
 
 // DeriveKey attempts to derive an arbitrary key specified by the passed
