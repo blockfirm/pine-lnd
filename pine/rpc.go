@@ -30,8 +30,18 @@ func getClient() (PineClient, error) {
 		return nil, err
 	}
 
-	rpcClient = NewPineClient(conn)
-	return rpcClient, nil
+	return NewPineClient(conn), nil
+}
+
+func init() {
+	client, err := getClient()
+	if err != nil {
+		fmt.Println("Unable to connect to Pine RPC")
+		return
+	}
+
+	rpcClient = client
+	fmt.Println("Connected to Pine RPC")
 }
 
 // SignMessage signs a message using the Pine Lightning API.
