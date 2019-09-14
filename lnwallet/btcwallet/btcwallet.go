@@ -2,7 +2,6 @@ package btcwallet
 
 import (
 	"bytes"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -240,7 +239,7 @@ func (b *BtcWallet) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) NewAddress(t lnwallet.AddressType, change bool) (btcutil.Address, error) {
-	_, _ = pine.NewAddress(t, change, b.netParams)
+	return pine.NewAddress(uint8(t), change, b.netParams)
 	var keyScope waddrmgr.KeyScope
 
 	switch t {
@@ -374,64 +373,92 @@ func (b *BtcWallet) UnlockOutpoint(o wire.OutPoint) {
 // This is a part of the WalletController interface.
 func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 	[]*lnwallet.Utxo, error) {
-	_, _ = pine.ListUnspentWitness(minConfs, maxConfs)
 
-	// First, grab all the unfiltered currently unspent outputs.
-	unspentOutputs, err := b.wallet.ListUnspent(minConfs, maxConfs, nil)
+	utxos, err := pine.ListUnspentWitness(minConfs, maxConfs)
 	if err != nil {
 		return nil, err
 	}
 
-	// Next, we'll run through all the regular outputs, only saving those
-	// which are p2wkh outputs or a p2wsh output nested within a p2sh output.
-	witnessOutputs := make([]*lnwallet.Utxo, 0, len(unspentOutputs))
-	for _, output := range unspentOutputs {
-		pkScript, err := hex.DecodeString(output.ScriptPubKey)
+	var unspentOutputs []*lnwallet.Utxo
+
+	for _, utxo := range utxos {
+		transactionHash, err := chainhash.NewHash(utxo.TransactionHash)
+
+		if err != nil {
+			fmt.Println("Error when converting hash")
+			return nil, err
+		}
+
+		unspentOutputs = append(unspentOutputs, &lnwallet.Utxo{
+			AddressType:   lnwallet.AddressType(utxo.AddressType),
+			Value:         btcutil.Amount(utxo.Value),
+			Confirmations: utxo.Confirmations,
+			PkScript:      utxo.PkScript,
+			OutPoint: wire.OutPoint{
+				Hash:  *transactionHash,
+				Index: utxo.Vout,
+			},
+		})
+	}
+
+	return unspentOutputs, nil
+	/*
+		// First, grab all the unfiltered currently unspent outputs.
+		unspentOutputs, err := b.wallet.ListUnspent(minConfs, maxConfs, nil)
 		if err != nil {
 			return nil, err
 		}
 
-		addressType := lnwallet.UnknownAddressType
-		if txscript.IsPayToWitnessPubKeyHash(pkScript) {
-			addressType = lnwallet.WitnessPubKey
-		} else if txscript.IsPayToScriptHash(pkScript) {
-			// TODO(roasbeef): This assumes all p2sh outputs returned by the
-			// wallet are nested p2pkh. We can't check the redeem script because
-			// the btcwallet service does not include it.
-			addressType = lnwallet.NestedWitnessPubKey
-		}
-
-		if addressType == lnwallet.WitnessPubKey ||
-			addressType == lnwallet.NestedWitnessPubKey {
-
-			txid, err := chainhash.NewHashFromStr(output.TxID)
+		// Next, we'll run through all the regular outputs, only saving those
+		// which are p2wkh outputs or a p2wsh output nested within a p2sh output.
+		witnessOutputs := make([]*lnwallet.Utxo, 0, len(unspentOutputs))
+		for _, output := range unspentOutputs {
+			pkScript, err := hex.DecodeString(output.ScriptPubKey)
 			if err != nil {
 				return nil, err
 			}
 
-			// We'll ensure we properly convert the amount given in
-			// BTC to satoshis.
-			amt, err := btcutil.NewAmount(output.Amount)
-			if err != nil {
-				return nil, err
+			addressType := lnwallet.UnknownAddressType
+			if txscript.IsPayToWitnessPubKeyHash(pkScript) {
+				addressType = lnwallet.WitnessPubKey
+			} else if txscript.IsPayToScriptHash(pkScript) {
+				// TODO(roasbeef): This assumes all p2sh outputs returned by the
+				// wallet are nested p2pkh. We can't check the redeem script because
+				// the btcwallet service does not include it.
+				addressType = lnwallet.NestedWitnessPubKey
 			}
 
-			utxo := &lnwallet.Utxo{
-				AddressType: addressType,
-				Value:       amt,
-				PkScript:    pkScript,
-				OutPoint: wire.OutPoint{
-					Hash:  *txid,
-					Index: output.Vout,
-				},
-				Confirmations: output.Confirmations,
+			if addressType == lnwallet.WitnessPubKey ||
+				addressType == lnwallet.NestedWitnessPubKey {
+
+				txid, err := chainhash.NewHashFromStr(output.TxID)
+				if err != nil {
+					return nil, err
+				}
+
+				// We'll ensure we properly convert the amount given in
+				// BTC to satoshis.
+				amt, err := btcutil.NewAmount(output.Amount)
+				if err != nil {
+					return nil, err
+				}
+
+				utxo := &lnwallet.Utxo{
+					AddressType: addressType,
+					Value:       amt,
+					PkScript:    pkScript,
+					OutPoint: wire.OutPoint{
+						Hash:  *txid,
+						Index: output.Vout,
+					},
+					Confirmations: output.Confirmations,
+				}
+				witnessOutputs = append(witnessOutputs, utxo)
 			}
-			witnessOutputs = append(witnessOutputs, utxo)
+
 		}
 
-	}
-
-	return witnessOutputs, nil
+		return witnessOutputs, nil*/
 }
 
 // PublishTransaction performs cursory validation (dust checks, etc), then

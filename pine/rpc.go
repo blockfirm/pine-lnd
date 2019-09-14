@@ -6,11 +6,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
 	"google.golang.org/grpc"
 )
 
@@ -68,7 +66,7 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 
 // ListUnspentWitness returns a list of unspent transaction outputs using
 // the Pine Lightning API.
-func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
+func ListUnspentWitness(minConfs, maxConfs int32) ([]*Utxo, error) {
 	fmt.Println("[PINE]: pine→ListUnspentWitness")
 
 	client, err := getClient()
@@ -88,29 +86,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo, error) {
 		return nil, err
 	}
 
-	var utxos []*lnwallet.Utxo
-
-	for _, utxo := range response.Utxos {
-		transactionHash, err := chainhash.NewHash(utxo.TransactionHash)
-
-		if err != nil {
-			fmt.Println("Error when converting hash")
-			return nil, err
-		}
-
-		utxos = append(utxos, &lnwallet.Utxo{
-			AddressType:   lnwallet.AddressType(utxo.AddressType),
-			Value:         btcutil.Amount(utxo.Value),
-			Confirmations: utxo.Confirmations,
-			PkScript:      utxo.PkScript,
-			OutPoint: wire.OutPoint{
-				Hash:  *transactionHash,
-				Index: utxo.Vout,
-			},
-		})
-	}
-
-	return utxos, nil
+	return response.Utxos, nil
 }
 
 // LockOutpoint marks an unspent transaction output as reserved.
@@ -162,7 +138,7 @@ func UnlockOutpoint(o wire.OutPoint) error {
 }
 
 // NewAddress returns a new address.
-func NewAddress(t lnwallet.AddressType, change bool, netParams *chaincfg.Params) (btcutil.Address, error) {
+func NewAddress(t uint8, change bool, netParams *chaincfg.Params) (btcutil.Address, error) {
 	fmt.Println("[PINE]: pine→NewAddress")
 
 	client, err := getClient()
