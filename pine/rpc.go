@@ -331,7 +331,7 @@ func serializeSignDescriptor(signDesc *input.SignDescriptor) *SignDescriptor {
 	}
 
 	if signDesc.KeyDesc.PubKey != nil {
-		signDescriptor.KeyDescriptor.PublicKey = signDesc.KeyDesc.PubKey.SerializeCompressed()
+		signDescriptor.KeyDescriptor.PublicKey = signDesc.KeyDesc.PubKey.SerializeUncompressed()
 	}
 
 	if signDesc.DoubleTweak != nil {
