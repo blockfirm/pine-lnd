@@ -8,15 +8,15 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/pine/rpc"
 	"google.golang.org/grpc"
 )
 
 const rpcTarget = "0.0.0.0:8910"
 
-var rpcClient PineClient
+var rpcClient rpc.PineClient
 
-func getClient() (PineClient, error) {
+func getClient() (rpc.PineClient, error) {
 	if rpcClient != nil {
 		return rpcClient, nil
 	}
@@ -28,7 +28,7 @@ func getClient() (PineClient, error) {
 		return nil, err
 	}
 
-	return NewPineClient(conn), nil
+	return rpc.NewPineClient(conn), nil
 }
 
 func init() {
@@ -51,7 +51,7 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 		return nil, err
 	}
 
-	request := &SignMessageRequest{
+	request := &rpc.SignMessageRequest{
 		PublicKey: pubKey.SerializeUncompressed(),
 		Message:   msg,
 	}
@@ -66,7 +66,7 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 
 // ListUnspentWitness returns a list of unspent transaction outputs using
 // the Pine Lightning API.
-func ListUnspentWitness(minConfs, maxConfs int32) ([]*Utxo, error) {
+func ListUnspentWitness(minConfs, maxConfs int32) ([]*rpc.Utxo, error) {
 	fmt.Println("[PINE]: pine→ListUnspentWitness")
 
 	client, err := getClient()
@@ -74,7 +74,7 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*Utxo, error) {
 		return nil, err
 	}
 
-	request := &ListUnspentWitnessRequest{
+	request := &rpc.ListUnspentWitnessRequest{
 		MinConfirmations: minConfs,
 		MaxConfirmations: maxConfs,
 	}
@@ -98,7 +98,7 @@ func LockOutpoint(o wire.OutPoint) error {
 		return err
 	}
 
-	request := &LockOutpointRequest{
+	request := &rpc.LockOutpointRequest{
 		Hash:  o.Hash.CloneBytes(),
 		Index: o.Index,
 	}
@@ -122,7 +122,7 @@ func UnlockOutpoint(o wire.OutPoint) error {
 		return err
 	}
 
-	request := &UnlockOutpointRequest{
+	request := &rpc.UnlockOutpointRequest{
 		Hash:  o.Hash.CloneBytes(),
 		Index: o.Index,
 	}
@@ -146,7 +146,7 @@ func NewAddress(t uint8, change bool, netParams *chaincfg.Params) (btcutil.Addre
 		return nil, err
 	}
 
-	request := &NewAddressRequest{
+	request := &rpc.NewAddressRequest{
 		Type:   uint32(t),
 		Change: change,
 	}
@@ -177,7 +177,7 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 		return nil, err
 	}
 
-	request := &FetchInputInfoRequest{
+	request := &rpc.FetchInputInfoRequest{
 		Hash:  prevOut.Hash.CloneBytes(),
 		Index: prevOut.Index,
 	}
@@ -194,7 +194,7 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 }
 
 // SignOutputRaw signs a transaction based on the passed sign descriptor.
-func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, error) {
+func SignOutputRaw(transaction *rpc.Transaction, signDescriptor *rpc.SignDescriptor) ([]byte, error) {
 	fmt.Println("[PINE]: pine→SignOutputRaw")
 
 	client, err := getClient()
@@ -202,10 +202,7 @@ func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, erro
 		return nil, err
 	}
 
-	transaction := serializeMsgTx(tx)
-	signDescriptor := serializeSignDescriptor(signDesc)
-
-	request := &SignOutputRawRequest{
+	request := &rpc.SignOutputRawRequest{
 		Transaction:    transaction,
 		SignDescriptor: signDescriptor,
 	}
@@ -221,7 +218,7 @@ func SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, erro
 }
 
 // ComputeInputScript returns an input script for the passed transaction and input.
-func ComputeInputScript(tx *wire.MsgTx, signDesc *input.SignDescriptor) (*input.Script, error) {
+func ComputeInputScript(transaction *rpc.Transaction, signDescriptor *rpc.SignDescriptor) (*rpc.ComputeInputScriptResponse, error) {
 	fmt.Println("[PINE]: pine→ComputeInputScript")
 
 	client, err := getClient()
@@ -229,10 +226,7 @@ func ComputeInputScript(tx *wire.MsgTx, signDesc *input.SignDescriptor) (*input.
 		return nil, err
 	}
 
-	transaction := serializeMsgTx(tx)
-	signDescriptor := serializeSignDescriptor(signDesc)
-
-	request := &ComputeInputScriptRequest{
+	request := &rpc.ComputeInputScriptRequest{
 		Transaction:    transaction,
 		SignDescriptor: signDescriptor,
 	}
@@ -244,77 +238,7 @@ func ComputeInputScript(tx *wire.MsgTx, signDesc *input.SignDescriptor) (*input.
 		return nil, err
 	}
 
-	inputScript := &input.Script{
-		Witness:   response.Witness,
-		SigScript: response.SignatureScript,
-	}
-
-	return inputScript, nil
-
-}
-
-func serializeMsgTx(tx *wire.MsgTx) *Transaction {
-	inputs := make([]*TransactionInput, len(tx.TxIn))
-	for index, input := range tx.TxIn {
-		inputs[index] = &TransactionInput{
-			TransactionHash: input.PreviousOutPoint.Hash.CloneBytes(),
-			Index:           input.PreviousOutPoint.Index,
-			SignatureScript: input.SignatureScript,
-			Witness:         input.Witness,
-			Sequence:        input.Sequence,
-		}
-	}
-
-	outputs := make([]*TransactionOutput, len(tx.TxOut))
-	for index, output := range tx.TxOut {
-		outputs[index] = &TransactionOutput{
-			Value:    output.Value,
-			PkScript: output.PkScript,
-		}
-	}
-
-	transaction := &Transaction{
-		Version:  tx.Version,
-		Inputs:   inputs,
-		Outputs:  outputs,
-		LockTime: tx.LockTime,
-	}
-
-	return transaction
-}
-
-func serializeSignDescriptor(signDesc *input.SignDescriptor) *SignDescriptor {
-	signDescriptor := &SignDescriptor{
-		KeyDescriptor: &KeyDescriptor{
-			KeyLocator: &KeyLocator{
-				KeyFamily: uint32(signDesc.KeyDesc.KeyLocator.Family),
-				Index:     signDesc.KeyDesc.KeyLocator.Index,
-			},
-		},
-		SingleTweak:   signDesc.SingleTweak,
-		WitnessScript: signDesc.WitnessScript,
-		Output: &TransactionOutput{
-			Value:    signDesc.Output.Value,
-			PkScript: signDesc.Output.PkScript,
-		},
-		HashType: uint32(signDesc.HashType),
-		SigHashes: &TransactionSigHashes{
-			HashPrevOuts: signDesc.SigHashes.HashPrevOuts.CloneBytes(),
-			HashSequence: signDesc.SigHashes.HashSequence.CloneBytes(),
-			HashOutputs:  signDesc.SigHashes.HashOutputs.CloneBytes(),
-		},
-		InputIndex: uint32(signDesc.InputIndex),
-	}
-
-	if signDesc.KeyDesc.PubKey != nil {
-		signDescriptor.KeyDescriptor.PublicKey = signDesc.KeyDesc.PubKey.SerializeUncompressed()
-	}
-
-	if signDesc.DoubleTweak != nil {
-		signDescriptor.DoubleTweak = signDesc.DoubleTweak.Serialize()
-	}
-
-	return signDescriptor
+	return response, nil
 }
 
 // GetRevocationRootKey returns a new private key to be used as a revocation root.
@@ -327,7 +251,7 @@ func GetRevocationRootKey() (*btcec.PrivateKey, error) {
 		return nil, err
 	}
 
-	request := &GetRevocationRootKeyRequest{}
+	request := &rpc.GetRevocationRootKeyRequest{}
 
 	response, err := client.GetRevocationRootKey(context.Background(), request)
 	if err != nil {
@@ -343,15 +267,15 @@ func GetRevocationRootKey() (*btcec.PrivateKey, error) {
 
 // DeriveNextKey derives a new key from the specified key family.
 // No private keys are returned, only a key descriptor of one.
-func DeriveNextKey(keyFam uint32) (*KeyDescriptor, error) {
+func DeriveNextKey(keyFam uint32) (*rpc.KeyDescriptor, error) {
 	fmt.Println("[PINE]: pine→DeriveNextKey")
 
 	client, err := getClient()
 	if err != nil {
-		return &KeyDescriptor{}, err
+		return &rpc.KeyDescriptor{}, err
 	}
 
-	request := &DeriveNextKeyRequest{
+	request := &rpc.DeriveNextKeyRequest{
 		KeyFamily: keyFam,
 	}
 
@@ -359,7 +283,7 @@ func DeriveNextKey(keyFam uint32) (*KeyDescriptor, error) {
 	if err != nil {
 		fmt.Println("Error when calling DeriveNextKey RPC:")
 		fmt.Println(err)
-		return &KeyDescriptor{}, err
+		return &rpc.KeyDescriptor{}, err
 	}
 
 	return response.KeyDescriptor, nil

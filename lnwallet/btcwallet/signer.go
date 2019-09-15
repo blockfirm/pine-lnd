@@ -16,6 +16,7 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/pine"
+	"github.com/lightningnetwork/lnd/pine/serializers"
 )
 
 // FetchInputInfo queries for the WalletController's knowledge of the passed
@@ -190,7 +191,10 @@ func maybeTweakPrivKey(signDesc *input.SignDescriptor,
 func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) ([]byte, error) {
 
-	_, _ = pine.SignOutputRaw(tx, signDesc)
+	return pine.SignOutputRaw(
+		serializers.SerializeMsgTx(tx),
+		serializers.SerializeSignDescriptor(signDesc),
+	)
 
 	witnessScript := signDesc.WitnessScript
 
@@ -232,7 +236,19 @@ func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 // This is a part of the WalletController interface.
 func (b *BtcWallet) ComputeInputScript(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) (*input.Script, error) {
-	pine.ComputeInputScript(tx, signDesc)
+
+	computeInputScriptResponse, err := pine.ComputeInputScript(
+		serializers.SerializeMsgTx(tx),
+		serializers.SerializeSignDescriptor(signDesc),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &input.Script{
+		Witness:   computeInputScriptResponse.Witness,
+		SigScript: computeInputScriptResponse.SignatureScript,
+	}, nil
 
 	outputScript := signDesc.Output.PkScript
 	walletAddr, err := b.fetchOutputAddr(outputScript)
