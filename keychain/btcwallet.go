@@ -145,7 +145,7 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 		keyLoc KeyLocator
 	)
 
-	keyDescriptor, err := pine.DeriveNextKey(keyFam)
+	keyDescriptor, err := pine.DeriveNextKey(uint32(keyFam))
 	if err != nil {
 		return KeyDescriptor{}, err
 	}
@@ -156,7 +156,7 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 	}
 
 	keyLoc = KeyLocator{
-		Family: keyDescriptor.KeyLocator.KeyFamily,
+		Family: KeyFamily(keyDescriptor.KeyLocator.KeyFamily),
 		Index:  keyDescriptor.KeyLocator.Index,
 	}
 
