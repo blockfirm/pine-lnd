@@ -389,7 +389,7 @@ service Lightning {
         };
     }
 
-    /** lncli: `subscribechannelevents`
+    /**
     SubscribeChannelEvents creates a uni-directional stream from the server to
     the client in which any updates relevant to the state of the channels are
     sent over. Events include new active channels, inactive channels, and closed
@@ -883,6 +883,13 @@ message SendRequest {
     maximum enforced.
     */
     uint32 cltv_limit = 10;
+
+    /** 
+    An optional field that can be used to pass an arbitrary set of TLV records
+    to a peer which understands the new records. This can be used to pass
+    application specific data during the payment attempt.
+    */
+    map<uint64, bytes> dest_tlv = 11;
 }
 
 message SendResponse {
@@ -1343,6 +1350,9 @@ message GetInfoResponse {
 
     /// The color of the current node in hex code format
     string color = 17 [json_name = "color"];
+
+    // Whether we consider ourselves synced with the public channel graph.
+    bool synced_to_graph = 18 [json_name = "synced_to_graph"];
 }
 
 message Chain {
@@ -1642,15 +1652,42 @@ message QueryRoutesRequest {
     repeated bytes ignored_nodes = 6;
 
     /**
-    A list of edges to ignore during path finding.
+    Deprecated. A list of edges to ignore during path finding.
     */
-    repeated EdgeLocator ignored_edges = 7;
+    repeated EdgeLocator ignored_edges = 7 [deprecated = true];
 
     /**
     The source node where the request route should originated from. If empty,
     self is assumed.
     */
     string source_pub_key = 8;
+
+    /**
+    If set to true, edge probabilities from mission control will be used to get
+    the optimal route.
+    */
+    bool use_mission_control = 9;
+
+    /**
+    A list of directed node pairs that will be ignored during path finding.
+    */
+    repeated NodePair ignored_pairs = 10;
+
+    /** 
+    An optional field that can be used to pass an arbitrary set of TLV records
+    to a peer which understands the new records. This can be used to pass
+    application specific data during the payment attempt. If the destination
+    does not support the specified recrods, and error will be returned.
+    */
+    map<uint64, bytes> dest_tlv = 11;
+}
+
+message NodePair {
+    /// The sending node of the pair.
+    bytes from = 1;
+
+    /// The receiving node of the pair.
+    bytes to = 2;
 }
 
 message EdgeLocator {
@@ -1667,7 +1704,17 @@ message EdgeLocator {
 }
 
 message QueryRoutesResponse {
+    /**
+    The route that results from the path finding operation. This is still a
+    repeated field to retain backwards compatibility.
+    */
     repeated Route routes = 1 [json_name = "routes"];
+
+    /**
+    The success probability of the returned route based on the current mission
+    control state. [EXPERIMENTAL]
+    */
+    double success_prob = 2 [json_name = "success_prob"];
 }
 
 message Hop {
@@ -1689,6 +1736,20 @@ message Hop {
     can be executed without relying on a copy of the channel graph.
     */
     string pub_key = 8 [json_name = "pub_key"];
+
+    /** 
+    If set to true, then this hop will be encoded using the new variable length
+    TLV format. Note that if any custom tlv_records below are specified, then
+    this field MUST be set to true for them to be encoded properly.
+    */
+    bool tlv_payload = 9 [json_name = "tlv_payload"];
+
+    /**
+    An optional set of key-value TLV records. This is useful within the context
+    of the SendToRoute call as it allows callers to specify arbitrary K-V pairs
+    to drop off at each hop within the onion.
+    */
+    map<uint64, bytes> tlv_records = 10 [json_name = "tlv_records"];
 }
 
 /**
@@ -1794,6 +1855,7 @@ message RoutingPolicy {
     int64 fee_rate_milli_msat = 4 [json_name = "fee_rate_milli_msat"];
     bool disabled = 5 [json_name = "disabled"];
     uint64 max_htlc_msat = 6 [json_name = "max_htlc_msat"];
+    uint32 last_update = 7 [json_name = "last_update"];
 }
 
 /**
@@ -1813,7 +1875,7 @@ message ChannelEdge {
     uint64 channel_id = 1 [json_name = "channel_id"];
     string chan_point = 2 [json_name = "chan_point"];
 
-    uint32 last_update = 3 [json_name = "last_update"];
+    uint32 last_update = 3 [json_name = "last_update", deprecated = true];
 
     string node1_pub = 4 [json_name = "node1_pub"];
     string node2_pub = 5 [json_name = "node2_pub"];
@@ -1867,6 +1929,9 @@ message NetworkInfo {
     int64 min_channel_size = 8 [json_name = "min_channel_size"];
     int64 max_channel_size = 9 [json_name = "max_channel_size"];
     int64 median_channel_size_sat = 10 [json_name = "median_channel_size_sat"];
+
+    // The number of edges marked as zombies.
+    uint64 num_zombie_chans = 11 [json_name = "num_zombie_chans"];
 
     // TODO(roasbeef): fee rate info, expiry
     //  * also additional RPC for tracking fee info once in
@@ -2062,6 +2127,42 @@ message Invoice {
     The state the invoice is in.
     */
     InvoiceState state = 21 [json_name = "state"];
+
+    /// List of HTLCs paying to this invoice [EXPERIMENTAL].
+    repeated InvoiceHTLC htlcs = 22 [json_name = "htlcs"];
+}
+
+enum InvoiceHTLCState {
+    ACCEPTED = 0;
+    SETTLED = 1;
+    CANCELLED = 2;
+}
+
+/// Details of an HTLC that paid to an invoice
+message InvoiceHTLC {
+    /// Short channel id over which the htlc was received.
+    uint64 chan_id = 1 [json_name = "chan_id"];
+
+    /// Index identifying the htlc on the channel.
+    uint64 htlc_index = 2 [json_name = "htlc_index"];
+
+    /// The amount of the htlc in msat.
+    uint64 amt_msat = 3 [json_name = "amt_msat"];
+
+    /// Block height at which this htlc was accepted.
+    int32 accept_height = 4 [json_name = "accept_height"];
+
+    /// Time at which this htlc was accepted.
+    int64 accept_time = 5 [json_name = "accept_time"];
+
+    /// Time at which this htlc was settled or cancelled.
+    int64 resolve_time = 6 [json_name = "resolve_time"];
+    
+    /// Block height at which this htlc expires.
+    int32 expiry_height = 7 [json_name = "expiry_height"];
+
+    /// Current state the htlc is in.
+    InvoiceHTLCState state = 8 [json_name = "state"];
 }
 
 message AddInvoiceResponse {

@@ -159,8 +159,8 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 			"(maxsize=%v)", len(invoice.Receipt), channeldb.MaxReceiptSize)
 	}
 	if len(invoice.DescriptionHash) > 0 && len(invoice.DescriptionHash) != 32 {
-		return nil, nil, fmt.Errorf("description hash is %v bytes, must be %v",
-			len(invoice.DescriptionHash), channeldb.MaxPaymentRequestSize)
+		return nil, nil, fmt.Errorf("description hash is %v bytes, must be 32",
+			len(invoice.DescriptionHash))
 	}
 
 	// The value of the invoice must not be negative.
@@ -268,7 +268,7 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 		for _, channel := range openChannels {
 			// We'll restrict the number of individual route hints
 			// to 20 to avoid creating overly large invoices.
-			if numHints > 20 {
+			if numHints >= 20 {
 				break
 			}
 
@@ -394,6 +394,8 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 		Memo:           []byte(invoice.Memo),
 		Receipt:        invoice.Receipt,
 		PaymentRequest: []byte(payReqString),
+		FinalCltvDelta: int32(payReq.MinFinalCLTVExpiry()),
+		Expiry:         payReq.Expiry(),
 		Terms: channeldb.ContractTerm{
 			Value:           amtMSat,
 			PaymentPreimage: paymentPreimage,

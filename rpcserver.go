@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/lightningnetwork/lnd/watchtower"
 
 	"github.com/btcsuite/btcd/blockchain"
@@ -25,11 +27,10 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
@@ -74,8 +75,6 @@ var (
 	// defined in BOLT-002. This value depends on which chain is active.
 	// It is set to the value under the Bitcoin chain as default.
 	MaxPaymentMSat = maxBtcPaymentMSat
-
-	defaultAccount uint32 = waddrmgr.DefaultAccountNum
 
 	// readPermissions is a slice of all entities that allow read
 	// permissions for authorization purposes, all lowercase.
@@ -394,8 +393,6 @@ type rpcServer struct {
 
 	server *server
 
-	wg sync.WaitGroup
-
 	// subServers are a set of sub-RPC servers that use the same gRPC and
 	// listening sockets as the main RPC server, but which maintain their
 	// own independent service. This allows us to expose a set of
@@ -407,6 +404,11 @@ type rpcServer struct {
 	// sub-servers will use to register themselves and accept client
 	// requests from.
 	grpcServer *grpc.Server
+
+	// listeners is a list of listeners to use when starting the grpc
+	// server. We make it configurable such that the grpc server can listen
+	// on custom interfaces.
+	listeners []net.Listener
 
 	// listenerCleanUp are a set of closures functions that will allow this
 	// main RPC server to clean up all the listening socket created for the
@@ -441,10 +443,10 @@ var _ lnrpc.LightningServer = (*rpcServer)(nil)
 // base level options passed to the grPC server. This typically includes things
 // like requiring TLS, etc.
 func newRPCServer(s *server, macService *macaroons.Service,
-	subServerCgs *subRPCServerConfigs, serverOpts []grpc.ServerOption,
-	restDialOpts []grpc.DialOption, restProxyDest string,
-	atpl *autopilot.Manager, invoiceRegistry *invoices.InvoiceRegistry,
-	tower *watchtower.Standalone, tlsCfg *tls.Config) (*rpcServer, error) {
+	subServerCgs *subRPCServerConfigs, restDialOpts []grpc.DialOption,
+	restProxyDest string, atpl *autopilot.Manager,
+	invoiceRegistry *invoices.InvoiceRegistry, tower *watchtower.Standalone,
+	tlsCfg *tls.Config, getListeners rpcListeners) (*rpcServer, error) {
 
 	// Set up router rpc backend.
 	channelGraph := s.chanDB.ChannelGraph()
@@ -497,8 +499,8 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	err = subServerCgs.PopulateDependencies(
 		s.cc, networkDir, macService, atpl, invoiceRegistry,
 		s.htlcSwitch, activeNetParams.Params, s.chanRouter,
-		routerBackend, s.nodeSigner, s.chanDB, s.sweeper,
-		tower,
+		routerBackend, s.nodeSigner, s.chanDB, s.sweeper, tower,
+		s.towerClient, cfg.net.ResolveTCPAddr,
 	)
 	if err != nil {
 		return nil, err
@@ -560,6 +562,21 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	unaryInterceptors := append(macUnaryInterceptors, promUnaryInterceptors...)
 	strmInterceptors := append(macStrmInterceptors, promStrmInterceptors...)
 
+	// We'll also add our logging interceptors as well, so we can
+	// automatically log all errors that happen during RPC calls.
+	unaryInterceptors = append(
+		unaryInterceptors, errorLogUnaryServerInterceptor(rpcsLog),
+	)
+	strmInterceptors = append(
+		strmInterceptors, errorLogStreamServerInterceptor(rpcsLog),
+	)
+
+	// Get the listeners and server options to use for this rpc server.
+	listeners, cleanup, serverOpts, err := getListeners()
+	if err != nil {
+		return nil, err
+	}
+
 	// If any interceptors have been set up, add them to the server options.
 	if len(unaryInterceptors) != 0 && len(strmInterceptors) != 0 {
 		chainedUnary := grpc_middleware.WithUnaryServerChain(
@@ -575,14 +592,16 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	// gRPC server, and register the main lnrpc server along side.
 	grpcServer := grpc.NewServer(serverOpts...)
 	rootRPCServer := &rpcServer{
-		restDialOpts:  restDialOpts,
-		restProxyDest: restProxyDest,
-		subServers:    subServers,
-		tlsCfg:        tlsCfg,
-		grpcServer:    grpcServer,
-		server:        s,
-		routerBackend: routerBackend,
-		quit:          make(chan struct{}, 1),
+		restDialOpts:    restDialOpts,
+		listeners:       listeners,
+		listenerCleanUp: []func(){cleanup},
+		restProxyDest:   restProxyDest,
+		subServers:      subServers,
+		tlsCfg:          tlsCfg,
+		grpcServer:      grpcServer,
+		server:          s,
+		routerBackend:   routerBackend,
+		quit:            make(chan struct{}, 1),
 	}
 	lnrpc.RegisterLightningServer(grpcServer, rootRPCServer)
 
@@ -622,23 +641,11 @@ func (r *rpcServer) Start() error {
 
 	// With all the sub-servers started, we'll spin up the listeners for
 	// the main RPC server itself.
-	for _, listener := range cfg.RPCListeners {
-		lis, err := lncfg.ListenOnAddress(listener)
-		if err != nil {
-			ltndLog.Errorf(
-				"RPC server unable to listen on %s", listener,
-			)
-			return err
-		}
-
-		r.listenerCleanUp = append(r.listenerCleanUp, func() {
-			lis.Close()
-		})
-
-		go func() {
+	for _, lis := range r.listeners {
+		go func(lis net.Listener) {
 			rpcsLog.Infof("RPC server listening on %s", lis.Addr())
 			r.grpcServer.Serve(lis)
-		}()
+		}(lis)
 	}
 
 	// If Prometheus monitoring is enabled, start the Prometheus exporter.
@@ -2029,6 +2036,8 @@ func (r *rpcServer) GetInfo(ctx context.Context,
 		uris[i] = fmt.Sprintf("%s@%s", encodedIDPub, addr.String())
 	}
 
+	isGraphSynced := r.server.authGossiper.SyncManager().IsGraphSynced()
+
 	// TODO(roasbeef): add synced height n stuff
 	return &lnrpc.GetInfoResponse{
 		IdentityPubkey:      encodedIDPub,
@@ -2046,6 +2055,7 @@ func (r *rpcServer) GetInfo(ctx context.Context,
 		Color:               routing.EncodeHexColor(nodeAnn.RGBColor),
 		BestHeaderTimestamp: int64(bestHeaderTimestamp),
 		Version:             build.Version(),
+		SyncedToGraph:       isGraphSynced,
 	}, nil
 }
 
@@ -2343,10 +2353,13 @@ func (r *rpcServer) PendingChannels(ctx context.Context,
 		pub := waitingClose.IdentityPub.SerializeCompressed()
 		chanPoint := waitingClose.FundingOutpoint
 		channel := &lnrpc.PendingChannelsResponse_PendingChannel{
-			RemoteNodePub: hex.EncodeToString(pub),
-			ChannelPoint:  chanPoint.String(),
-			Capacity:      int64(waitingClose.Capacity),
-			LocalBalance:  int64(waitingClose.LocalCommitment.LocalBalance.ToSatoshis()),
+			RemoteNodePub:        hex.EncodeToString(pub),
+			ChannelPoint:         chanPoint.String(),
+			Capacity:             int64(waitingClose.Capacity),
+			LocalBalance:         int64(waitingClose.LocalCommitment.LocalBalance.ToSatoshis()),
+			RemoteBalance:        int64(waitingClose.LocalCommitment.RemoteBalance.ToSatoshis()),
+			LocalChanReserveSat:  int64(waitingClose.LocalChanCfg.ChanReserve),
+			RemoteChanReserveSat: int64(waitingClose.RemoteChanCfg.ChanReserve),
 		}
 
 		// A close tx has been broadcasted, all our balance will be in
@@ -2914,6 +2927,8 @@ type rpcPaymentIntent struct {
 	outgoingChannelID *uint64
 	payReq            []byte
 
+	destTLV []tlv.Record
+
 	route *route.Route
 }
 
@@ -2954,6 +2969,16 @@ func extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPaymentIntent, error
 	// Take cltv limit from request if set.
 	if rpcPayReq.CltvLimit != 0 {
 		payIntent.cltvLimit = &rpcPayReq.CltvLimit
+	}
+
+	if len(rpcPayReq.DestTlv) != 0 {
+		var err error
+		payIntent.destTLV, err = tlv.MapToRecords(
+			rpcPayReq.DestTlv,
+		)
+		if err != nil {
+			return payIntent, err
+		}
 	}
 
 	// If the payment request field isn't blank, then the details of the
@@ -3055,14 +3080,6 @@ func extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPaymentIntent, error
 
 		copy(payIntent.rHash[:], paymentHash)
 
-	// If we're in debug HTLC mode, then all outgoing HTLCs will pay to the
-	// same debug rHash. Otherwise, we pay to the rHash specified within
-	// the RPC request.
-	case cfg.DebugHTLC &&
-		bytes.Equal(payIntent.rHash[:], lntypes.ZeroHash[:]):
-
-		copy(payIntent.rHash[:], invoices.DebugHash[:])
-
 	default:
 		copy(payIntent.rHash[:], rpcPayReq.PaymentHash)
 	}
@@ -3119,6 +3136,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			OutgoingChannelID: payIntent.outgoingChannelID,
 			PaymentRequest:    payIntent.payReq,
 			PayAttemptTimeout: routing.DefaultPayAttemptTimeout,
+			FinalDestRecords:  payIntent.destTLV,
 		}
 
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(
@@ -3289,10 +3307,16 @@ func (r *rpcServer) sendPayment(stream *paymentStream) error {
 					return
 				}
 
-				marshalledRouted := r.routerBackend.
-					MarshallRoute(resp.Route)
+				backend := r.routerBackend
+				marshalledRouted, err := backend.MarshallRoute(
+					resp.Route,
+				)
+				if err != nil {
+					errChan <- err
+					return
+				}
 
-				err := stream.send(&lnrpc.SendResponse{
+				err = stream.send(&lnrpc.SendResponse{
 					PaymentHash:     payIntent.rHash[:],
 					PaymentPreimage: resp.Preimage[:],
 					PaymentRoute:    marshalledRouted,
@@ -3371,10 +3395,15 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 		}, nil
 	}
 
+	rpcRoute, err := r.routerBackend.MarshallRoute(resp.Route)
+	if err != nil {
+		return nil, err
+	}
+
 	return &lnrpc.SendResponse{
 		PaymentHash:     payIntent.rHash[:],
 		PaymentPreimage: resp.Preimage[:],
-		PaymentRoute:    r.routerBackend.MarshallRoute(resp.Route),
+		PaymentRoute:    rpcRoute,
 	}, nil
 }
 
@@ -3464,7 +3493,7 @@ func (r *rpcServer) LookupInvoice(ctx context.Context,
 
 	rpcsLog.Tracef("[lookupinvoice] searching for invoice %x", payHash[:])
 
-	invoice, _, err := r.server.invoices.LookupInvoice(payHash)
+	invoice, err := r.server.invoices.LookupInvoice(payHash)
 	if err != nil {
 		return nil, err
 	}
@@ -3741,15 +3770,19 @@ func (r *rpcServer) DescribeGraph(ctx context.Context,
 func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 	c1, c2 *channeldb.ChannelEdgePolicy) *lnrpc.ChannelEdge {
 
-	var (
-		lastUpdate int64
-	)
+	// Order the edges by increasing pubkey.
+	if bytes.Compare(edgeInfo.NodeKey2Bytes[:],
+		edgeInfo.NodeKey1Bytes[:]) < 0 {
 
-	if c2 != nil {
-		lastUpdate = c2.LastUpdate.Unix()
+		c2, c1 = c1, c2
 	}
+
+	var lastUpdate int64
 	if c1 != nil {
 		lastUpdate = c1.LastUpdate.Unix()
+	}
+	if c2 != nil && c2.LastUpdate.Unix() > lastUpdate {
+		lastUpdate = c2.LastUpdate.Unix()
 	}
 
 	edge := &lnrpc.ChannelEdge{
@@ -3770,6 +3803,7 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 			FeeBaseMsat:      int64(c1.FeeBaseMSat),
 			FeeRateMilliMsat: int64(c1.FeeProportionalMillionths),
 			Disabled:         c1.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
+			LastUpdate:       uint32(c1.LastUpdate.Unix()),
 		}
 	}
 
@@ -3781,6 +3815,7 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 			FeeBaseMsat:      int64(c2.FeeBaseMSat),
 			FeeRateMilliMsat: int64(c2.FeeProportionalMillionths),
 			Disabled:         c2.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
+			LastUpdate:       uint32(c2.LastUpdate.Unix()),
 		}
 	}
 
@@ -3997,6 +4032,12 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 		return nil, err
 	}
 
+	// Query the graph for the current number of zombie channels.
+	numZombies, err := graph.NumZombies()
+	if err != nil {
+		return nil, err
+	}
+
 	// Find the median.
 	medianChanSize = autopilot.Median(allChans)
 
@@ -4020,6 +4061,7 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 		MinChannelSize:       int64(minChannelSize),
 		MaxChannelSize:       int64(maxChannelSize),
 		MedianChannelSizeSat: int64(medianChanSize),
+		NumZombieChans:       numZombies,
 	}
 
 	// Similarly, if we don't have any channels, then we'll also set the
@@ -4419,7 +4461,7 @@ func (r *rpcServer) FeeReport(ctx context.Context,
 		for {
 			timeSlice, err := fwdEventLog.Query(query)
 			if err != nil {
-				return 0, nil
+				return 0, err
 			}
 
 			// If the timeslice is empty, then we'll return as
@@ -4503,6 +4545,12 @@ func (r *rpcServer) FeeReport(ctx context.Context,
 // 0.000001, or 0.0001%.
 const minFeeRate = 1e-6
 
+// policyUpdateLock ensures that the database and the link do not fall out of
+// sync if there are concurrent fee update calls. Without it, there is a chance
+// that policy A updates the database, then policy B updates the database, then
+// policy B updates the link, then policy A updates the link.
+var policyUpdateLock sync.Mutex
+
 // UpdateChannelPolicy allows the caller to update the channel forwarding policy
 // for all channels globally, or a particular channel.
 func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
@@ -4570,30 +4618,18 @@ func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
 	// With the scope resolved, we'll now send this to the
 	// AuthenticatedGossiper so it can propagate the new policy for our
 	// target channel(s).
-	err := r.server.authGossiper.PropagateChanPolicyUpdate(
+	policyUpdateLock.Lock()
+	defer policyUpdateLock.Unlock()
+	chanPolicies, err := r.server.authGossiper.PropagateChanPolicyUpdate(
 		chanPolicy, targetChans...,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Finally, we'll apply the set of active links amongst the target
-	// channels.
-	//
-	// We create a partially policy as the logic won't overwrite a valid
-	// sub-policy with a "nil" one.
-	p := htlcswitch.ForwardingPolicy{
-		BaseFee:       baseFeeMsat,
-		FeeRate:       lnwire.MilliSatoshi(feeRateFixed),
-		TimeLockDelta: req.TimeLockDelta,
-	}
-	err = r.server.htlcSwitch.UpdateForwardingPolicies(p, targetChans...)
-	if err != nil {
-		// If we're unable update the fees due to the links not being
-		// online, then we don't need to fail the call. We'll simply
-		// log the failure.
-		rpcsLog.Warnf("Unable to update link fees: %v", err)
-	}
+	// Finally, we'll apply the set of channel policies to the target
+	// channels' links.
+	r.server.htlcSwitch.UpdateForwardingPolicies(chanPolicies)
 
 	return &lnrpc.PolicyUpdateResponse{}, nil
 }

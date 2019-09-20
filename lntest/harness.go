@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -492,7 +494,7 @@ func (n *NetworkHarness) EnsureConnected(ctx context.Context, a, b *HarnessNode)
 		return false
 	}
 
-	err := WaitPredicate(func() bool {
+	err := wait.Predicate(func() bool {
 		return findSelfInPeerList(a, b) && findSelfInPeerList(b, a)
 	}, time.Second*15)
 	if err != nil {
@@ -525,7 +527,7 @@ func (n *NetworkHarness) ConnectNodes(ctx context.Context, a, b *HarnessNode) er
 		return err
 	}
 
-	err = WaitPredicate(func() bool {
+	err = wait.Predicate(func() bool {
 		// If node B is seen in the ListPeers response from node A,
 		// then we can exit early as the connection has been fully
 		// established.
@@ -646,6 +648,65 @@ func (n *NetworkHarness) ShutdownNode(node *HarnessNode) error {
 // started up again.
 func (n *NetworkHarness) StopNode(node *HarnessNode) error {
 	return node.stop()
+}
+
+// SaveProfilesPages hits profiles pages of all active nodes and writes it to
+// disk using a similar naming scheme as to the regular set of logs.
+func (n *NetworkHarness) SaveProfilesPages() {
+	// Only write gorutine dumps if flag is active.
+	if !(*goroutineDump) {
+		return
+	}
+
+	for _, node := range n.activeNodes {
+		if err := saveProfilesPage(node); err != nil {
+			fmt.Println(err)
+		}
+	}
+}
+
+// saveProfilesPage saves the profiles page for the given node to file.
+func saveProfilesPage(node *HarnessNode) error {
+	resp, err := http.Get(
+		fmt.Sprintf(
+			"http://localhost:%d/debug/pprof/goroutine?debug=1",
+			node.cfg.ProfilePort,
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("Failed to get profile page "+
+			"(node_id=%d, name=%s): %v\n",
+			node.NodeID, node.cfg.Name, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("Failed to read profile page "+
+			"(node_id=%d, name=%s): %v\n",
+			node.NodeID, node.cfg.Name, err)
+	}
+
+	fileName := fmt.Sprintf(
+		"pprof-%d-%s-%s.log", node.NodeID, node.cfg.Name,
+		hex.EncodeToString(node.PubKey[:logPubKeyBytes]),
+	)
+
+	logFile, err := os.Create(fileName)
+	if err != nil {
+		return fmt.Errorf("Failed to create file for profile page "+
+			"(node_id=%d, name=%s): %v\n",
+			node.NodeID, node.cfg.Name, err)
+	}
+	defer logFile.Close()
+
+	_, err = logFile.Write(body)
+	if err != nil {
+		return fmt.Errorf("Failed to save profile page "+
+			"(node_id=%d, name=%s): %v\n",
+			node.NodeID, node.cfg.Name, err)
+	}
+	return nil
 }
 
 // TODO(roasbeef): add a WithChannel higher-order function?
@@ -1008,12 +1069,12 @@ func (n *NetworkHarness) CloseChannel(ctx context.Context,
 
 		// Before proceeding, we'll ensure that the channel is active
 		// for both nodes.
-		err = WaitPredicate(activeChanPredicate(lnNode), timeout)
+		err = wait.Predicate(activeChanPredicate(lnNode), timeout)
 		if err != nil {
 			return nil, nil, fmt.Errorf("channel of closing " +
 				"node not active in time")
 		}
-		err = WaitPredicate(activeChanPredicate(receivingNode), timeout)
+		err = wait.Predicate(activeChanPredicate(receivingNode), timeout)
 		if err != nil {
 			return nil, nil, fmt.Errorf("channel of receiving " +
 				"node not active in time")
@@ -1134,83 +1195,11 @@ func (n *NetworkHarness) AssertChannelExists(ctx context.Context,
 		return false
 	}
 
-	if err := WaitPredicate(pred, time.Second*15); err != nil {
+	if err := wait.Predicate(pred, time.Second*15); err != nil {
 		return fmt.Errorf("channel not found: %v", predErr)
 	}
 
 	return nil
-}
-
-// WaitPredicate is a helper test function that will wait for a timeout period
-// of time until the passed predicate returns true. This function is helpful as
-// timing doesn't always line up well when running integration tests with
-// several running lnd nodes. This function gives callers a way to assert that
-// some property is upheld within a particular time frame.
-func WaitPredicate(pred func() bool, timeout time.Duration) error {
-	const pollInterval = 20 * time.Millisecond
-
-	exitTimer := time.After(timeout)
-	for {
-		<-time.After(pollInterval)
-
-		select {
-		case <-exitTimer:
-			return fmt.Errorf("predicate not satisfied after time out")
-		default:
-		}
-
-		if pred() {
-			return nil
-		}
-	}
-}
-
-// WaitNoError is a wrapper around WaitPredicate that waits for the passed
-// method f to execute without error, and returns the last error encountered if
-// this doesn't happen within the timeout.
-func WaitNoError(f func() error, timeout time.Duration) error {
-	var predErr error
-	pred := func() bool {
-		if err := f(); err != nil {
-			predErr = err
-			return false
-		}
-		return true
-	}
-
-	// If f() doesn't succeed within the timeout, return the last
-	// encountered error.
-	if err := WaitPredicate(pred, timeout); err != nil {
-		return predErr
-	}
-
-	return nil
-}
-
-// WaitInvariant is a helper test function that will wait for a timeout period
-// of time, verifying that a statement remains true for the entire duration.
-// This function is helpful as timing doesn't always line up well when running
-// integration tests with several running lnd nodes. This function gives callers
-// a way to assert that some property is maintained over a particular time
-// frame.
-func WaitInvariant(statement func() bool, timeout time.Duration) error {
-	const pollInterval = 20 * time.Millisecond
-
-	exitTimer := time.After(timeout)
-	for {
-		<-time.After(pollInterval)
-
-		// Fail if the invariant is broken while polling.
-		if !statement() {
-			return fmt.Errorf("invariant broken before time out")
-		}
-
-		select {
-		case <-exitTimer:
-			return nil
-		default:
-		}
-	}
 }
 
 // DumpLogs reads the current logs generated by the passed node, and returns
@@ -1313,7 +1302,7 @@ func (n *NetworkHarness) sendCoins(ctx context.Context, amt btcutil.Amount,
 
 	// Now, wait for ListUnspent to show the unconfirmed transaction
 	// containing the correct pkscript.
-	err = WaitNoError(func() error {
+	err = wait.NoError(func() error {
 		// Since neutrino doesn't support unconfirmed outputs, skip
 		// this check.
 		if target.cfg.BackendCfg.Name() == "neutrino" {

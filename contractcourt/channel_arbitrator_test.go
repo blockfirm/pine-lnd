@@ -1,6 +1,7 @@
 package contractcourt
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -23,7 +24,6 @@ type mockArbitratorLog struct {
 	failCommit      bool
 	failCommitState ArbitratorState
 	resolutions     *ContractResolutions
-	chainActions    ChainActionMap
 	resolvers       map[ContractResolver]struct{}
 
 	commitSet *CommitSet
@@ -355,7 +355,7 @@ func TestChannelArbitratorRemoteForceClose(t *testing.T) {
 		t, log.newStates, StateContractClosed, StateFullyResolved,
 	)
 
-	// It should alos mark the channel as resolved.
+	// It should also mark the channel as resolved.
 	select {
 	case <-resolved:
 		// Expected.
@@ -470,6 +470,49 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 	}
 }
 
+// TestChannelArbitratorBreachClose tests that the ChannelArbitrator goes
+// through the expected states in case we notice a breach in the chain, and
+// gracefully exits.
+func TestChannelArbitratorBreachClose(t *testing.T) {
+	log := &mockArbitratorLog{
+		state:     StateDefault,
+		newStates: make(chan ArbitratorState, 5),
+	}
+
+	chanArb, resolved, _, _, err := createTestChannelArbitrator(log)
+	if err != nil {
+		t.Fatalf("unable to create ChannelArbitrator: %v", err)
+	}
+
+	if err := chanArb.Start(); err != nil {
+		t.Fatalf("unable to start ChannelArbitrator: %v", err)
+	}
+	defer func() {
+		if err := chanArb.Stop(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// It should start out in the default state.
+	assertState(t, chanArb, StateDefault)
+
+	// Send a breach close event.
+	chanArb.cfg.ChainEvents.ContractBreach <- &lnwallet.BreachRetribution{}
+
+	// It should transition StateDefault -> StateFullyResolved.
+	assertStateTransitions(
+		t, log.newStates, StateFullyResolved,
+	)
+
+	// It should also mark the channel as resolved.
+	select {
+	case <-resolved:
+		// Expected.
+	case <-time.After(5 * time.Second):
+		t.Fatalf("contract was not resolved")
+	}
+}
+
 // TestChannelArbitratorLocalForceClosePendingHtlc tests that the
 // ChannelArbitrator goes through the expected states in case we request it to
 // force close a channel that still has an HTLC pending.
@@ -497,6 +540,8 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 
 		return nil
 	}
+	chanArb.cfg.PreimageDB = newMockWitnessBeacon()
+	chanArb.cfg.Registry = &mockRegistry{}
 
 	if err := chanArb.Start(); err != nil {
 		t.Fatalf("unable to start ChannelArbitrator: %v", err)
@@ -513,16 +558,33 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	chanArb.UpdateContractSignals(signals)
 
 	// Add HTLC to channel arbitrator.
-	htlcIndex := uint64(99)
 	htlc := channeldb.HTLC{
 		Incoming:  false,
 		Amt:       10000,
-		HtlcIndex: htlcIndex,
+		HtlcIndex: 99,
+	}
+
+	outgoingDustHtlc := channeldb.HTLC{
+		Incoming:    false,
+		Amt:         100,
+		HtlcIndex:   100,
+		OutputIndex: -1,
+	}
+
+	incomingDustHtlc := channeldb.HTLC{
+		Incoming:    true,
+		Amt:         105,
+		HtlcIndex:   101,
+		OutputIndex: -1,
+	}
+
+	htlcSet := []channeldb.HTLC{
+		htlc, outgoingDustHtlc, incomingDustHtlc,
 	}
 
 	htlcUpdates <- &ContractUpdate{
 		HtlcKey: LocalHtlcSet,
-		Htlcs:   []channeldb.HTLC{htlc},
+		Htlcs:   htlcSet,
 	}
 
 	errChan := make(chan error, 1)
@@ -608,7 +670,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 		CommitSet: CommitSet{
 			ConfCommitKey: &LocalHtlcSet,
 			HtlcSets: map[HtlcSetKey][]channeldb.HTLC{
-				LocalHtlcSet: {htlc},
+				LocalHtlcSet: htlcSet,
 			},
 		},
 	}
@@ -617,6 +679,22 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 		t, arbLog.newStates, StateContractClosed,
 		StateWaitingFullResolution,
 	)
+
+	// We expect an immediate resolution message for the outgoing dust htlc.
+	// It is not resolvable on-chain.
+	select {
+	case msgs := <-resolutions:
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, instead got %v", len(msgs))
+		}
+
+		if msgs[0].HtlcIndex != outgoingDustHtlc.HtlcIndex {
+			t.Fatalf("wrong htlc index: expected %v, got %v",
+				outgoingDustHtlc.HtlcIndex, msgs[0].HtlcIndex)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("resolution msgs not sent")
+	}
 
 	// htlcOutgoingContestResolver is now active and waiting for the HTLC to
 	// expire. It should not yet have passed it on for incubation.
@@ -650,9 +728,9 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 			t.Fatalf("expected 1 message, instead got %v", len(msgs))
 		}
 
-		if msgs[0].HtlcIndex != htlcIndex {
+		if msgs[0].HtlcIndex != htlc.HtlcIndex {
 			t.Fatalf("wrong htlc index: expected %v, got %v",
-				htlcIndex, msgs[0].HtlcIndex)
+				htlc.HtlcIndex, msgs[0].HtlcIndex)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("resolution msgs not sent")
@@ -1015,6 +1093,122 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 		t.Fatalf("unable to start ChannelArbitrator: %v", err)
 	}
 	defer chanArb.Stop()
+
+	// Finally it should advance to StateFullyResolved.
+	assertStateTransitions(
+		t, log.newStates, StateFullyResolved,
+	)
+
+	// It should also mark the channel as resolved.
+	select {
+	case <-resolved:
+		// Expected.
+	case <-time.After(5 * time.Second):
+		t.Fatalf("contract was not resolved")
+	}
+}
+
+// TestChannelArbitratorForceCloseBreachedChannel tests that the channel
+// arbitrator is able to handle a channel in the process of being force closed
+// is breached by the remote node. In these cases we expect the
+// ChannelArbitrator to gracefully exit, as the breach is handled by other
+// subsystems.
+func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
+	log := &mockArbitratorLog{
+		state:     StateDefault,
+		newStates: make(chan ArbitratorState, 5),
+	}
+
+	chanArb, _, _, _, err := createTestChannelArbitrator(log)
+	if err != nil {
+		t.Fatalf("unable to create ChannelArbitrator: %v", err)
+	}
+
+	if err := chanArb.Start(); err != nil {
+		t.Fatalf("unable to start ChannelArbitrator: %v", err)
+	}
+
+	// It should start in StateDefault.
+	assertState(t, chanArb, StateDefault)
+
+	// We start by attempting a local force close. We'll return an
+	// unexpected publication error, causing the state machine to halt.
+	expErr := errors.New("intentional publication error")
+	stateChan := make(chan ArbitratorState)
+	chanArb.cfg.PublishTx = func(*wire.MsgTx) error {
+		// When the force close tx is being broadcasted, check that the
+		// state is correct at that point.
+		select {
+		case stateChan <- chanArb.state:
+		case <-chanArb.quit:
+			return fmt.Errorf("exiting")
+		}
+		return expErr
+	}
+
+	errChan := make(chan error, 1)
+	respChan := make(chan *wire.MsgTx, 1)
+
+	// With the channel found, and the request crafted, we'll send over a
+	// force close request to the arbitrator that watches this channel.
+	chanArb.forceCloseReqs <- &forceCloseReq{
+		errResp: errChan,
+		closeTx: respChan,
+	}
+
+	// It should transition to StateBroadcastCommit.
+	assertStateTransitions(t, log.newStates, StateBroadcastCommit)
+
+	// We expect it to be in state StateBroadcastCommit when attempting
+	// the force close.
+	select {
+	case state := <-stateChan:
+		if state != StateBroadcastCommit {
+			t.Fatalf("state during PublishTx was %v", state)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("no state update received")
+	}
+
+	// Make sure we get the expected error.
+	select {
+	case err := <-errChan:
+		if err != expErr {
+			t.Fatalf("unexpected error force closing channel: %v",
+				err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no response received")
+	}
+
+	// Stop the channel abitrator.
+	if err := chanArb.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	// We mimic that the channel is breached while the channel arbitrator
+	// is down. This means that on restart it will be started with a
+	// pending close channel, of type BreachClose.
+	chanArb, resolved, _, _, err := createTestChannelArbitrator(log)
+	if err != nil {
+		t.Fatalf("unable to create ChannelArbitrator: %v", err)
+	}
+
+	chanArb.cfg.IsPendingClose = true
+	chanArb.cfg.ClosingHeight = 100
+	chanArb.cfg.CloseType = channeldb.BreachClose
+
+	// Start the channel abitrator again, and make sure it goes straight to
+	// state fully resolved, as in case of breach there is nothing to
+	// handle.
+	if err := chanArb.Start(); err != nil {
+		t.Fatalf("unable to start ChannelArbitrator: %v", err)
+	}
+	defer func() {
+		if err := chanArb.Stop(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	// Finally it should advance to StateFullyResolved.
 	assertStateTransitions(

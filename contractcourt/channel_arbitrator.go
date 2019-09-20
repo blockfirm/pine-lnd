@@ -357,6 +357,9 @@ func (c *ChannelArbitrator) Start() error {
 			case channeldb.CooperativeClose:
 				trigger = coopCloseTrigger
 
+			case channeldb.BreachClose:
+				trigger = breachCloseTrigger
+
 			case channeldb.LocalForceClose:
 				trigger = localCloseTrigger
 
@@ -418,8 +421,6 @@ func (c *ChannelArbitrator) Start() error {
 		}
 	}
 
-	// TODO(roasbeef): cancel if breached
-
 	c.wg.Add(1)
 	go c.channelAttendant(bestHeight)
 	return nil
@@ -479,7 +480,7 @@ func (c *ChannelArbitrator) relaunchResolvers() error {
 		"resolvers", c.cfg.ChanPoint, len(unresolvedContracts))
 
 	for _, resolver := range unresolvedContracts {
-		supplementResolver(resolver, htlcMap)
+		c.supplementResolver(resolver, htlcMap)
 	}
 
 	c.launchResolvers(unresolvedContracts)
@@ -489,24 +490,22 @@ func (c *ChannelArbitrator) relaunchResolvers() error {
 
 // supplementResolver takes a resolver as it is restored from the log and fills
 // in missing data from the htlcMap.
-func supplementResolver(resolver ContractResolver,
+func (c *ChannelArbitrator) supplementResolver(resolver ContractResolver,
 	htlcMap map[wire.OutPoint]*channeldb.HTLC) error {
 
 	switch r := resolver.(type) {
 
 	case *htlcSuccessResolver:
-		return supplementSuccessResolver(r, htlcMap)
+		return c.supplementSuccessResolver(r, htlcMap)
 
 	case *htlcIncomingContestResolver:
-		return supplementSuccessResolver(
-			&r.htlcSuccessResolver, htlcMap,
-		)
+		return c.supplementIncomingContestResolver(r, htlcMap)
 
 	case *htlcTimeoutResolver:
-		return supplementTimeoutResolver(r, htlcMap)
+		return c.supplementTimeoutResolver(r, htlcMap)
 
 	case *htlcOutgoingContestResolver:
-		return supplementTimeoutResolver(
+		return c.supplementTimeoutResolver(
 			&r.htlcTimeoutResolver, htlcMap,
 		)
 	}
@@ -514,9 +513,33 @@ func supplementResolver(resolver ContractResolver,
 	return nil
 }
 
+// supplementSuccessResolver takes a htlcIncomingContestResolver as it is
+// restored from the log and fills in missing data from the htlcMap.
+func (c *ChannelArbitrator) supplementIncomingContestResolver(
+	r *htlcIncomingContestResolver,
+	htlcMap map[wire.OutPoint]*channeldb.HTLC) error {
+
+	res := r.htlcResolution
+	htlcPoint := res.HtlcPoint()
+	htlc, ok := htlcMap[htlcPoint]
+	if !ok {
+		return errors.New(
+			"htlc for incoming contest resolver unavailable",
+		)
+	}
+
+	r.htlcAmt = htlc.Amt
+	r.circuitKey = channeldb.CircuitKey{
+		ChanID: c.cfg.ShortChanID,
+		HtlcID: htlc.HtlcIndex,
+	}
+
+	return nil
+}
+
 // supplementSuccessResolver takes a htlcSuccessResolver as it is restored from
 // the log and fills in missing data from the htlcMap.
-func supplementSuccessResolver(r *htlcSuccessResolver,
+func (c *ChannelArbitrator) supplementSuccessResolver(r *htlcSuccessResolver,
 	htlcMap map[wire.OutPoint]*channeldb.HTLC) error {
 
 	res := r.htlcResolution
@@ -533,7 +556,7 @@ func supplementSuccessResolver(r *htlcSuccessResolver,
 
 // supplementTimeoutResolver takes a htlcSuccessResolver as it is restored from
 // the log and fills in missing data from the htlcMap.
-func supplementTimeoutResolver(r *htlcTimeoutResolver,
+func (c *ChannelArbitrator) supplementTimeoutResolver(r *htlcTimeoutResolver,
 	htlcMap map[wire.OutPoint]*channeldb.HTLC) error {
 
 	res := r.htlcResolution
@@ -627,6 +650,11 @@ const (
 	// coopCloseTrigger is a transition trigger driven by a cooperative
 	// close transaction being confirmed.
 	coopCloseTrigger
+
+	// breachCloseTrigger is a transition trigger driven by a remote breach
+	// being confirmed. In this case the channel arbitrator won't have to
+	// do anything, so we'll just clean up and exit gracefully.
+	breachCloseTrigger
 )
 
 // String returns a human readable string describing the passed
@@ -647,6 +675,9 @@ func (t transitionTrigger) String() string {
 
 	case coopCloseTrigger:
 		return "coopCloseTrigger"
+
+	case breachCloseTrigger:
+		return "breachCloseTrigger"
 
 	default:
 		return "unknown trigger"
@@ -726,8 +757,9 @@ func (c *ChannelArbitrator) stateStep(
 
 		// If the trigger is a cooperative close being confirmed, then
 		// we can go straight to StateFullyResolved, as there won't be
-		// any contracts to resolve.
-		case coopCloseTrigger:
+		// any contracts to resolve. The same is true in the case of a
+		// breach.
+		case coopCloseTrigger, breachCloseTrigger:
 			nextState = StateFullyResolved
 
 		// Otherwise, if this state advance was triggered by a
@@ -751,7 +783,7 @@ func (c *ChannelArbitrator) stateStep(
 		// StateBroadcastCommit via a user or chain trigger. On restart,
 		// this state may be reexecuted after closing the channel, but
 		// failing to commit to StateContractClosed or
-		// StateFullyResolved. In that case, one of the three close
+		// StateFullyResolved. In that case, one of the four close
 		// triggers will be presented, signifying that we should skip
 		// rebroadcasting, and go straight to resolving the on-chain
 		// contract or marking the channel resolved.
@@ -763,7 +795,7 @@ func (c *ChannelArbitrator) stateStep(
 				c.cfg.ChanPoint, trigger, StateContractClosed)
 			return StateContractClosed, closeTx, nil
 
-		case coopCloseTrigger:
+		case coopCloseTrigger, breachCloseTrigger:
 			log.Infof("ChannelArbitrator(%v): detected %s "+
 				"close after closing channel, fast-forwarding "+
 				"to %s to resolve contract",
@@ -839,7 +871,9 @@ func (c *ChannelArbitrator) stateStep(
 				c.cfg.ChanPoint, trigger)
 			nextState = StateContractClosed
 
-		case coopCloseTrigger:
+		// If a coop close or breach was confirmed, jump straight to
+		// the fully resolved state.
+		case coopCloseTrigger, breachCloseTrigger:
 			log.Infof("ChannelArbitrator(%v): trigger %v, "+
 				" going to StateFullyResolved",
 				c.cfg.ChanPoint, trigger)
@@ -1294,6 +1328,15 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 	// either learn of it eventually from the outgoing HTLC, or the sender
 	// will timeout the HTLC.
 	for _, htlc := range htlcs.incomingHTLCs {
+		// If the HTLC is dust, there is no action to be taken.
+		if htlc.OutputIndex < 0 {
+			log.Debugf("ChannelArbitrator(%v): no resolution "+
+				"needed for incoming dust htlc=%x",
+				c.cfg.ChanPoint, htlc.RHash[:])
+
+			continue
+		}
+
 		log.Tracef("ChannelArbitrator(%v): watching chain to decide "+
 			"action for incoming htlc=%x", c.cfg.ChanPoint,
 			htlc.RHash[:])
@@ -1326,7 +1369,7 @@ func (c *ChannelArbitrator) isPreimageAvailable(hash lntypes.Hash) (bool,
 	// than the invoice cltv delta. We don't want to go to chain only to
 	// have the incoming contest resolver decide that we don't want to
 	// settle this invoice.
-	invoice, _, err := c.cfg.Registry.LookupInvoice(hash)
+	invoice, err := c.cfg.Registry.LookupInvoice(hash)
 	switch err {
 	case nil:
 	case channeldb.ErrInvoiceNotFound, channeldb.ErrNoInvoicesCreated:
@@ -1723,9 +1766,15 @@ func (c *ChannelArbitrator) prepContractResolutions(
 					continue
 				}
 
+				circuitKey := channeldb.CircuitKey{
+					HtlcID: htlc.HtlcIndex,
+					ChanID: c.cfg.ShortChanID,
+				}
+
 				resKit.Quit = make(chan struct{})
 				resolver := &htlcIncomingContestResolver{
 					htlcExpiry: htlc.RefundTimeout,
+					circuitKey: circuitKey,
 					htlcSuccessResolver: htlcSuccessResolver{
 						htlcResolution:  resolution,
 						broadcastHeight: height,
@@ -1838,9 +1887,13 @@ func (c *ChannelArbitrator) resolveContract(currentContract ContractResolver) {
 			// contract.
 			nextContract, err := currentContract.Resolve()
 			if err != nil {
+				if err == errResolverShuttingDown {
+					return
+				}
+
 				log.Errorf("ChannelArbitrator(%v): unable to "+
-					"progress resolver: %v",
-					c.cfg.ChanPoint, err)
+					"progress %T: %v",
+					c.cfg.ChanPoint, currentContract, err)
 				return
 			}
 
@@ -1985,7 +2038,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				uint32(bestHeight), chainTrigger, nil,
 			)
 			if err != nil {
-				log.Errorf("unable to advance state: %v", err)
+				log.Errorf("Unable to advance state: %v", err)
 			}
 
 			// If as a result of this trigger, the contract is
@@ -2040,7 +2093,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				closeInfo.ChannelCloseSummary,
 			)
 			if err != nil {
-				log.Errorf("unable to mark channel closed: "+
+				log.Errorf("Unable to mark channel closed: "+
 					"%v", err)
 				return
 			}
@@ -2051,7 +2104,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				closeInfo.CloseHeight, coopCloseTrigger, nil,
 			)
 			if err != nil {
-				log.Errorf("unable to advance state: %v", err)
+				log.Errorf("Unable to advance state: %v", err)
 				return
 			}
 
@@ -2082,7 +2135,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			// actions on restart.
 			err := c.log.LogContractResolutions(contractRes)
 			if err != nil {
-				log.Errorf("unable to write resolutions: %v",
+				log.Errorf("Unable to write resolutions: %v",
 					err)
 				return
 			}
@@ -2090,7 +2143,8 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				&closeInfo.CommitSet,
 			)
 			if err != nil {
-				log.Errorf("unable to write commit set: %v", err)
+				log.Errorf("Unable to write commit set: %v",
+					err)
 				return
 			}
 
@@ -2108,7 +2162,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				closeInfo.ChannelCloseSummary,
 			)
 			if err != nil {
-				log.Errorf("unable to mark "+
+				log.Errorf("Unable to mark "+
 					"channel closed: %v", err)
 				return
 			}
@@ -2120,7 +2174,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				localCloseTrigger, &closeInfo.CommitSet,
 			)
 			if err != nil {
-				log.Errorf("unable to advance state: %v", err)
+				log.Errorf("Unable to advance state: %v", err)
 			}
 
 		// The remote party has broadcast the commitment on-chain.
@@ -2147,7 +2201,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			// actions on restart.
 			err := c.log.LogContractResolutions(contractRes)
 			if err != nil {
-				log.Errorf("unable to write resolutions: %v",
+				log.Errorf("Unable to write resolutions: %v",
 					err)
 				return
 			}
@@ -2155,7 +2209,8 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				&uniClosure.CommitSet,
 			)
 			if err != nil {
-				log.Errorf("unable to write commit set: %v", err)
+				log.Errorf("Unable to write commit set: %v",
+					err)
 				return
 			}
 
@@ -2172,7 +2227,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			closeSummary := &uniClosure.ChannelCloseSummary
 			err = c.cfg.MarkChannelClosed(closeSummary)
 			if err != nil {
-				log.Errorf("unable to mark channel closed: %v",
+				log.Errorf("Unable to mark channel closed: %v",
 					err)
 				return
 			}
@@ -2184,7 +2239,24 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				remoteCloseTrigger, &uniClosure.CommitSet,
 			)
 			if err != nil {
-				log.Errorf("unable to advance state: %v", err)
+				log.Errorf("Unable to advance state: %v", err)
+			}
+
+		// The remote has breached the channel. As this is handled by
+		// the ChainWatcher and BreachArbiter, we don't have to do
+		// anything in particular, so just advance our state and
+		// gracefully exit.
+		case <-c.cfg.ChainEvents.ContractBreach:
+			log.Infof("ChannelArbitrator(%v): remote party has "+
+				"breached channel!", c.cfg.ChanPoint)
+
+			// We'll advance our state machine until it reaches a
+			// terminal state.
+			_, _, err := c.advanceState(
+				uint32(bestHeight), breachCloseTrigger, nil,
+			)
+			if err != nil {
+				log.Errorf("Unable to advance state: %v", err)
 			}
 
 		// A new contract has just been resolved, we'll now check our
@@ -2198,7 +2270,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				uint32(bestHeight), chainTrigger, nil,
 			)
 			if err != nil {
-				log.Errorf("unable to advance state: %v", err)
+				log.Errorf("Unable to advance state: %v", err)
 			}
 
 			// If we don't have anything further to do after
@@ -2232,7 +2304,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 				uint32(bestHeight), userTrigger, nil,
 			)
 			if err != nil {
-				log.Errorf("unable to advance state: %v", err)
+				log.Errorf("Unable to advance state: %v", err)
 			}
 
 			select {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"strings"
 	"testing"
 	"time"
 
@@ -1804,7 +1803,7 @@ func TestSwitchSendPayment(t *testing.T) {
 	// the add htlc request with error and sent the htlc fail request
 	// back. This request should be forwarded back to alice channel link.
 	obfuscator := NewMockObfuscator()
-	failure := lnwire.NewFailUnknownPaymentHash(update.Amount)
+	failure := lnwire.NewFailIncorrectDetails(update.Amount, 100)
 	reason, err := obfuscator.EncryptFirstHop(failure)
 	if err != nil {
 		t.Fatalf("unable obfuscate failure: %v", err)
@@ -1825,10 +1824,9 @@ func TestSwitchSendPayment(t *testing.T) {
 
 	select {
 	case err := <-errChan:
-		if !strings.Contains(err.Error(), lnwire.CodeUnknownPaymentHash.String()) {
-			t.Fatalf("expected %v got %v", err,
-				lnwire.CodeUnknownPaymentHash)
-		}
+		assertFailureCode(
+			t, err, lnwire.CodeIncorrectOrUnknownPaymentDetails,
+		)
 	case <-time.After(time.Second):
 		t.Fatal("err wasn't received")
 	}
@@ -2099,8 +2097,8 @@ func TestUpdateFailMalformedHTLCErrorConversion(t *testing.T) {
 
 		fwdingErr := err.(*ForwardingError)
 		failureMsg := fwdingErr.FailureMessage
-		if _, ok := failureMsg.(*lnwire.FailTemporaryChannelFailure); !ok {
-			t.Fatalf("expected temp chan failure instead got: %v",
+		if _, ok := failureMsg.(*lnwire.FailInvalidOnionKey); !ok {
+			t.Fatalf("expected onion failure instead got: %v",
 				fwdingErr.FailureMessage)
 		}
 	}
@@ -2236,5 +2234,142 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 
 	case <-time.After(1 * time.Second):
 		t.Fatalf("result not received")
+	}
+}
+
+// TestInvalidFailure tests that the switch returns an unreadable failure error
+// if the failure cannot be decrypted.
+func TestInvalidFailure(t *testing.T) {
+	t.Parallel()
+
+	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	if err != nil {
+		t.Fatalf("unable to create alice server: %v", err)
+	}
+
+	s, err := initSwitchWithDB(testStartingHeight, nil)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer s.Stop()
+
+	chanID1, _, aliceChanID, _ := genIDs()
+
+	// Set up a mock channel link.
+	aliceChannelLink := newMockChannelLink(
+		s, chanID1, aliceChanID, alicePeer, true,
+	)
+	if err := s.AddLink(aliceChannelLink); err != nil {
+		t.Fatalf("unable to add link: %v", err)
+	}
+
+	// Create a request which should be forwarded to the mock channel link.
+	preimage, err := genPreimage()
+	if err != nil {
+		t.Fatalf("unable to generate preimage: %v", err)
+	}
+	rhash := fastsha256.Sum256(preimage[:])
+	update := &lnwire.UpdateAddHTLC{
+		PaymentHash: rhash,
+		Amount:      1,
+	}
+
+	paymentID := uint64(123)
+
+	// Send the request.
+	err = s.SendHTLC(
+		aliceChannelLink.ShortChanID(), paymentID, update,
+	)
+	if err != nil {
+		t.Fatalf("unable to send payment: %v", err)
+	}
+
+	// Catch the packet and complete the circuit so that the switch is ready
+	// for a response.
+	select {
+	case packet := <-aliceChannelLink.packets:
+		if err := aliceChannelLink.completeCircuit(packet); err != nil {
+			t.Fatalf("unable to complete payment circuit: %v", err)
+		}
+
+	case <-time.After(time.Second):
+		t.Fatal("request was not propagated to destination")
+	}
+
+	// Send response packet with an unreadable failure message to the
+	// switch. The reason failed is not relevant, because we mock the
+	// decryption.
+	packet := &htlcPacket{
+		outgoingChanID: aliceChannelLink.ShortChanID(),
+		outgoingHTLCID: 0,
+		amount:         1,
+		htlc: &lnwire.UpdateFailHTLC{
+			Reason: []byte{1, 2, 3},
+		},
+	}
+
+	if err := s.forward(packet); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+
+	// Get payment result from switch. We expect an unreadable failure
+	// message error.
+	deobfuscator := SphinxErrorDecrypter{
+		OnionErrorDecrypter: &mockOnionErrorDecryptor{
+			err: ErrUnreadableFailureMessage,
+		},
+	}
+
+	resultChan, err := s.GetPaymentResult(
+		paymentID, rhash, &deobfuscator,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case result := <-resultChan:
+		if result.Error != ErrUnreadableFailureMessage {
+			t.Fatal("expected unreadable failure message")
+		}
+
+	case <-time.After(time.Second):
+		t.Fatal("err wasn't received")
+	}
+
+	// Modify the decryption to simulate that decryption went alright, but
+	// the failure cannot be decoded.
+	deobfuscator = SphinxErrorDecrypter{
+		OnionErrorDecrypter: &mockOnionErrorDecryptor{
+			sourceIdx: 2,
+			message:   []byte{200},
+		},
+	}
+
+	resultChan, err = s.GetPaymentResult(
+		paymentID, rhash, &deobfuscator,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case result := <-resultChan:
+		fErr, ok := result.Error.(*ForwardingError)
+		if !ok {
+			t.Fatal("expected ForwardingError")
+		}
+		if fErr.FailureSourceIdx != 2 {
+			t.Fatal("unexpected error source index")
+		}
+		if fErr.FailureMessage != nil {
+			t.Fatal("expected empty failure message")
+		}
+
+	case <-time.After(time.Second):
+		t.Fatal("err wasn't received")
 	}
 }

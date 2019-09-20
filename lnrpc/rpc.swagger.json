@@ -722,6 +722,14 @@
             "in": "query",
             "required": false,
             "type": "string"
+          },
+          {
+            "name": "use_mission_control",
+            "description": "*\nIf set to true, edge probabilities from mission control will be used to get\nthe optimal route.",
+            "in": "query",
+            "required": false,
+            "type": "boolean",
+            "format": "boolean"
           }
         ],
         "tags": [
@@ -2210,6 +2218,11 @@
         "color": {
           "type": "string",
           "title": "/ The color of the current node in hex code format"
+        },
+        "synced_to_graph": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "Whether we consider ourselves synced with the public channel graph."
         }
       }
     },
@@ -2292,6 +2305,19 @@
         "pub_key": {
           "type": "string",
           "description": "*\nAn optional public key of the hop. If the public key is given, the payment\ncan be executed without relying on a copy of the channel graph."
+        },
+        "tlv_payload": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "* \nIf set to true, then this hop will be encoded using the new variable length\nTLV format. Note that if any custom tlv_records below are specified, then\nthis field MUST be set to true for them to be encoded properly."
+        },
+        "tlv_records": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "*\nAn optional set of key-value TLV records. This is useful within the context\nof the SendToRoute call as it allows callers to specify arbitrary K-V pairs\nto drop off at each hop within the onion."
         }
       }
     },
@@ -2463,8 +2489,69 @@
         "state": {
           "$ref": "#/definitions/InvoiceInvoiceState",
           "description": "*\nThe state the invoice is in."
+        },
+        "htlcs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcInvoiceHTLC"
+          },
+          "description": "/ List of HTLCs paying to this invoice [EXPERIMENTAL]."
         }
       }
+    },
+    "lnrpcInvoiceHTLC": {
+      "type": "object",
+      "properties": {
+        "chan_id": {
+          "type": "string",
+          "format": "uint64",
+          "description": "/ Short channel id over which the htlc was received."
+        },
+        "htlc_index": {
+          "type": "string",
+          "format": "uint64",
+          "description": "/ Index identifying the htlc on the channel."
+        },
+        "amt_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "/ The amount of the htlc in msat."
+        },
+        "accept_height": {
+          "type": "integer",
+          "format": "int32",
+          "description": "/ Block height at which this htlc was accepted."
+        },
+        "accept_time": {
+          "type": "string",
+          "format": "int64",
+          "description": "/ Time at which this htlc was accepted."
+        },
+        "resolve_time": {
+          "type": "string",
+          "format": "int64",
+          "description": "/ Time at which this htlc was settled or cancelled."
+        },
+        "expiry_height": {
+          "type": "integer",
+          "format": "int32",
+          "description": "/ Block height at which this htlc expires."
+        },
+        "state": {
+          "$ref": "#/definitions/lnrpcInvoiceHTLCState",
+          "description": "/ Current state the htlc is in."
+        }
+      },
+      "title": "/ Details of an HTLC that paid to an invoice"
+    },
+    "lnrpcInvoiceHTLCState": {
+      "type": "string",
+      "enum": [
+        "ACCEPTED",
+        "SETTLED",
+        "CANCELLED"
+      ],
+      "default": "ACCEPTED"
     },
     "lnrpcLightningAddress": {
       "type": "object",
@@ -2633,6 +2720,11 @@
         "median_channel_size_sat": {
           "type": "string",
           "format": "int64"
+        },
+        "num_zombie_chans": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The number of edges marked as zombies."
         }
       }
     },
@@ -3071,7 +3163,13 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/lnrpcRoute"
-          }
+          },
+          "description": "*\nThe route that results from the path finding operation. This is still a\nrepeated field to retain backwards compatibility."
+        },
+        "success_prob": {
+          "type": "number",
+          "format": "double",
+          "title": "*\nThe success probability of the returned route based on the current mission\ncontrol state. [EXPERIMENTAL]"
         }
       }
     },
@@ -3166,6 +3264,10 @@
         "max_htlc_msat": {
           "type": "string",
           "format": "uint64"
+        },
+        "last_update": {
+          "type": "integer",
+          "format": "int64"
         }
       }
     },
@@ -3264,6 +3366,14 @@
           "type": "integer",
           "format": "int64",
           "description": "* \nAn optional maximum total time lock for the route. If zero, there is no\nmaximum enforced."
+        },
+        "dest_tlv": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "* \nAn optional field that can be used to pass an arbitrary set of TLV records\nto a peer which understands the new records. This can be used to pass\napplication specific data during the payment attempt."
         }
       }
     },

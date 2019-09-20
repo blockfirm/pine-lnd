@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -22,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/pine"
+	"github.com/lightningnetwork/lnd/pine/serializers"
 )
 
 const (
@@ -59,11 +59,6 @@ type BtcWallet struct {
 	netParams *chaincfg.Params
 
 	chainKeyScope waddrmgr.KeyScope
-
-	// utxoCache is a cache used to speed up repeated calls to
-	// FetchInputInfo.
-	utxoCache map[wire.OutPoint]*wire.TxOut
-	cacheMtx  sync.RWMutex
 }
 
 // A compile time check to ensure that BtcWallet implements the
@@ -130,7 +125,6 @@ func New(cfg Config) (*BtcWallet, error) {
 		chain:         cfg.ChainSource,
 		netParams:     cfg.NetParams,
 		chainKeyScope: chainKeyScope,
-		utxoCache:     make(map[wire.OutPoint]*wire.TxOut),
 	}, nil
 }
 
@@ -382,23 +376,12 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 	var unspentOutputs []*lnwallet.Utxo
 
 	for _, utxo := range utxos {
-		transactionHash, err := chainhash.NewHash(utxo.TransactionHash)
-
+		unspentOutput, err := serializers.DeserializeUtxo(utxo)
 		if err != nil {
-			fmt.Println("Error when converting hash")
 			return nil, err
 		}
 
-		unspentOutputs = append(unspentOutputs, &lnwallet.Utxo{
-			AddressType:   lnwallet.AddressType(utxo.AddressType),
-			Value:         btcutil.Amount(utxo.Value),
-			Confirmations: utxo.Confirmations,
-			PkScript:      utxo.PkScript,
-			OutPoint: wire.OutPoint{
-				Hash:  *transactionHash,
-				Index: utxo.Vout,
-			},
-		})
+		unspentOutputs = append(unspentOutputs, unspentOutput)
 	}
 
 	return unspentOutputs, nil

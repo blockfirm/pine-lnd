@@ -29,7 +29,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lntest"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/shachain"
@@ -1537,7 +1537,7 @@ func assertBrarCleanup(t *testing.T, brar *breachArbiter,
 
 	t.Helper()
 
-	err := lntest.WaitNoError(func() error {
+	err := wait.NoError(func() error {
 		isBreached, err := brar.IsBreached(chanPoint)
 		if err != nil {
 			return err
@@ -1762,12 +1762,20 @@ func createInitChannels(revocationWindow int) (*lnwallet.LightningChannel, *lnwa
 	}
 
 	alicePath, err := ioutil.TempDir("", "alicedb")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	dbAlice, err := channeldb.Open(alicePath)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	bobPath, err := ioutil.TempDir("", "bobdb")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	dbBob, err := channeldb.Open(bobPath)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1981,20 +1989,4 @@ func forceStateTransition(chanA, chanB *lnwallet.LightningChannel) error {
 	}
 
 	return nil
-}
-
-// calcStaticFee calculates appropriate fees for commitment transactions.  This
-// function provides a simple way to allow test balance assertions to take fee
-// calculations into account.
-//
-// TODO(bvu): Refactor when dynamic fee estimation is added.
-// TODO(conner) remove code duplication
-func calcStaticFee(numHTLCs int) btcutil.Amount {
-	const (
-		commitWeight = btcutil.Amount(724)
-		htlcWeight   = 172
-		feePerKw     = btcutil.Amount(24/4) * 1000
-	)
-	return feePerKw * (commitWeight +
-		btcutil.Amount(htlcWeight*numHTLCs)) / 1000
 }

@@ -26,42 +26,43 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/watchtowerrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/wtclientrpc"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	macaroon "gopkg.in/macaroon.v2"
+	"gopkg.in/macaroon.v2"
 )
 
-var (
-	// numActiveNodes is the number of active nodes within the test network.
-	numActiveNodes = 0
-
+const (
 	// defaultNodePort is the initial p2p port which will be used by the
 	// first created lightning node to listen on for incoming p2p
 	// connections.  Subsequent allocated ports for future Lightning nodes
 	// instances will be monotonically increasing numbers calculated as
-	// such: defaultP2pPort + (3 * harness.nodeNum).
+	// such: defaultP2pPort + (4 * harness.nodeNum).
 	defaultNodePort = 19555
 
 	// defaultClientPort is the initial rpc port which will be used by the
 	// first created lightning node to listen on for incoming rpc
 	// connections. Subsequent allocated ports for future rpc harness
 	// instances will be monotonically increasing numbers calculated
-	// as such: defaultP2pPort + (3 * harness.nodeNum).
-	defaultClientPort = 19556
+	// as such: defaultP2pPort + (4 * harness.nodeNum).
+	defaultClientPort = defaultNodePort + 1
 
 	// defaultRestPort is the initial rest port which will be used by the
 	// first created lightning node to listen on for incoming rest
 	// connections. Subsequent allocated ports for future rpc harness
 	// instances will be monotonically increasing numbers calculated
-	// as such: defaultP2pPort + (3 * harness.nodeNum).
-	defaultRestPort = 19557
+	// as such: defaultP2pPort + (4 * harness.nodeNum).
+	defaultRestPort = defaultNodePort + 2
 
-	// logOutput is a flag that can be set to append the output from the
-	// seed nodes to log files.
-	logOutput = flag.Bool("logoutput", false,
-		"log output from node n to file outputn.log")
+	// defaultProfilePort is the initial port which will be used for
+	// profiling by the first created lightning node. Subsequent allocated
+	// ports for future rpc harness instances will be monotonically
+	// increasing numbers calculated as such:
+	// defaultProfilePort + (4 * harness.nodeNum).
+	defaultProfilePort = defaultNodePort + 3
 
 	// logPubKeyBytes is the number of bytes of the node's PubKey that
 	// will be appended to the log file name. The whole PubKey is too
@@ -74,24 +75,33 @@ var (
 	trickleDelay = 50
 )
 
+var (
+	// numActiveNodes is the number of active nodes within the test network.
+	numActiveNodes = 0
+
+	// logOutput is a flag that can be set to append the output from the
+	// seed nodes to log files.
+	logOutput = flag.Bool("logoutput", false,
+		"log output from node n to file output-n.log")
+
+	// goroutineDump is a flag that can be set to dump the active
+	// goroutines of test nodes on failure.
+	goroutineDump = flag.Bool("goroutinedump", false,
+		"write goroutine dump from node n to file pprof-n.log")
+)
+
 // generateListeningPorts returns three ints representing ports to listen on
 // designated for the current lightning network test. If there haven't been any
 // test instances created, the default ports are used. Otherwise, in order to
-// support multiple test nodes running at once, the p2p, rpc, and rest ports
-// are incremented after each initialization.
-func generateListeningPorts() (int, int, int) {
-	var p2p, rpc, rest int
-	if numActiveNodes == 0 {
-		p2p = defaultNodePort
-		rpc = defaultClientPort
-		rest = defaultRestPort
-	} else {
-		p2p = defaultNodePort + (3 * numActiveNodes)
-		rpc = defaultClientPort + (3 * numActiveNodes)
-		rest = defaultRestPort + (3 * numActiveNodes)
-	}
+// support multiple test nodes running at once, the p2p, rpc, rest and
+// profiling ports are incremented after each initialization.
+func generateListeningPorts() (int, int, int, int) {
+	p2p := defaultNodePort + (4 * numActiveNodes)
+	rpc := defaultClientPort + (4 * numActiveNodes)
+	rest := defaultRestPort + (4 * numActiveNodes)
+	profile := defaultProfilePort + (4 * numActiveNodes)
 
-	return p2p, rpc, rest
+	return p2p, rpc, rest, profile
 }
 
 // BackendConfig is an interface that abstracts away the specific chain backend
@@ -129,9 +139,10 @@ type nodeConfig struct {
 	HasSeed  bool
 	Password []byte
 
-	P2PPort  int
-	RPCPort  int
-	RESTPort int
+	P2PPort     int
+	RPCPort     int
+	RESTPort    int
+	ProfilePort int
 }
 
 func (cfg nodeConfig) P2PAddr() string {
@@ -195,6 +206,7 @@ func (cfg nodeConfig) genArgs() []string {
 	args = append(args, fmt.Sprintf("--readonlymacaroonpath=%v", cfg.ReadMacPath))
 	args = append(args, fmt.Sprintf("--invoicemacaroonpath=%v", cfg.InvoiceMacPath))
 	args = append(args, fmt.Sprintf("--trickledelay=%v", trickleDelay))
+	args = append(args, fmt.Sprintf("--profile=%d", cfg.ProfilePort))
 
 	if !cfg.HasSeed {
 		args = append(args, "--noseedbackup")
@@ -255,7 +267,8 @@ type HarnessNode struct {
 	// because a name collision would occur with LightningClient.
 	RouterClient     routerrpc.RouterClient
 	WalletKitClient  walletrpc.WalletKitClient
-	WatchtowerClient watchtowerrpc.WatchtowerClient
+	Watchtower       watchtowerrpc.WatchtowerClient
+	WatchtowerClient wtclientrpc.WatchtowerClientClient
 }
 
 // Assert *HarnessNode implements the lnrpc.LightningClient interface.
@@ -280,7 +293,7 @@ func newNode(cfg nodeConfig) (*HarnessNode, error) {
 	cfg.ReadMacPath = filepath.Join(cfg.DataDir, "readonly.macaroon")
 	cfg.InvoiceMacPath = filepath.Join(cfg.DataDir, "invoice.macaroon")
 
-	cfg.P2PPort, cfg.RPCPort, cfg.RESTPort = generateListeningPorts()
+	cfg.P2PPort, cfg.RPCPort, cfg.RESTPort, cfg.ProfilePort = generateListeningPorts()
 
 	nodeNum := numActiveNodes
 	numActiveNodes++
@@ -333,7 +346,6 @@ func (hn *HarnessNode) start(lndError chan<- error) error {
 	hn.quit = make(chan struct{})
 
 	args := hn.cfg.genArgs()
-	args = append(args, fmt.Sprintf("--profile=%d", 9000+hn.NodeID))
 	hn.cmd = exec.Command("../../lnd-itest", args...)
 
 	// Redirect stderr output to buffer
@@ -457,7 +469,7 @@ func (hn *HarnessNode) initClientWhenReady() error {
 		conn    *grpc.ClientConn
 		connErr error
 	)
-	if err := WaitNoError(func() error {
+	if err := wait.NoError(func() error {
 		conn, connErr = hn.ConnectRPC(true)
 		return connErr
 	}, 5*time.Second); err != nil {
@@ -517,7 +529,8 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	hn.InvoicesClient = invoicesrpc.NewInvoicesClient(conn)
 	hn.RouterClient = routerrpc.NewRouterClient(conn)
 	hn.WalletKitClient = walletrpc.NewWalletKitClient(conn)
-	hn.WatchtowerClient = watchtowerrpc.NewWatchtowerClient(conn)
+	hn.Watchtower = watchtowerrpc.NewWatchtowerClient(conn)
+	hn.WatchtowerClient = wtclientrpc.NewWatchtowerClientClient(conn)
 
 	// Set the harness node's pubkey to what the node claims in GetInfo.
 	err := hn.FetchNodeInfo()
@@ -531,7 +544,7 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	// until then, we'll create a dummy subscription to ensure we can do so
 	// successfully before proceeding. We use a dummy subscription in order
 	// to not consume an update from the real one.
-	err = WaitNoError(func() error {
+	err = wait.NoError(func() error {
 		req := &lnrpc.GraphTopologySubscription{}
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		topologyClient, err := hn.SubscribeChannelGraph(ctx, req)
@@ -720,6 +733,7 @@ func (hn *HarnessNode) stop() error {
 	hn.processExit = nil
 	hn.LightningClient = nil
 	hn.WalletUnlockerClient = nil
+	hn.Watchtower = nil
 	hn.WatchtowerClient = nil
 	return nil
 }
@@ -1051,7 +1065,7 @@ func (hn *HarnessNode) WaitForBalance(expectedBalance btcutil.Amount, confirmed 
 		return btcutil.Amount(balance.UnconfirmedBalance) == expectedBalance
 	}
 
-	err := WaitPredicate(doesBalanceMatch, 30*time.Second)
+	err := wait.Predicate(doesBalanceMatch, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("balances not synced after deadline: "+
 			"expected %v, only have %v", expectedBalance, lastBalance)

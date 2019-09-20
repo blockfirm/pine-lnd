@@ -33,6 +33,7 @@ _testmain.go
 
 # Integration test log files
 lntest/itest/output*.log
+lntest/itest/pprof*.log
 lntest/itest/.backendlogs
 lntest/itest/.minerlogs
 
@@ -41,6 +42,10 @@ cmd/cmd
 *.hex
 
 cmd/lncli/lncli
+
+# Files from mobile build.
+mobile/build
+mobile/*_generated.go
 
 # vim
 *.swp

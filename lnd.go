@@ -93,10 +93,29 @@ var (
 	}
 )
 
+// ListenerCfg is a wrapper around custom listeners that can be passed to lnd
+// when calling its main method.
+type ListenerCfg struct {
+	// WalletUnlocker can be set to the listener to use for the wallet
+	// unlocker. If nil a regular network listener will be created.
+	WalletUnlocker net.Listener
+
+	// RPCListener can be set to the listener to use for the RPC server. If
+	// nil a regular network listener will be created.
+	RPCListener net.Listener
+}
+
+// rpcListeners is a function type used for closures that fetches a set of RPC
+// listeners for the current configuration, and the GRPC server options to use
+// with these listeners. If no custom listeners are present, this should return
+// normal listeners from the RPC endpoints defined in the config, and server
+// options specifying TLS.
+type rpcListeners func() ([]net.Listener, func(), []grpc.ServerOption, error)
+
 // Main is the true entry point for lnd. This function is required since defers
 // created in the top-level scope of a main method aren't executed if os.Exit()
 // is called.
-func Main() error {
+func Main(lisCfg ListenerCfg) error {
 	// Load the configuration, and parse any command line options. This
 	// function will also set up logging properly.
 	loadedConfig, err := loadConfig()
@@ -150,7 +169,9 @@ func Main() error {
 	if cfg.CPUProfile != "" {
 		f, err := os.Create(cfg.CPUProfile)
 		if err != nil {
-			ltndLog.Errorf("Unable to create cpu profile: %v", err)
+			err := fmt.Errorf("Unable to create CPU profile: %v",
+				err)
+			ltndLog.Error(err)
 			return err
 		}
 		pprof.StartCPUProfile(f)
@@ -171,7 +192,8 @@ func Main() error {
 		channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
 	)
 	if err != nil {
-		ltndLog.Errorf("unable to open channeldb: %v", err)
+		err := fmt.Errorf("Unable to open channeldb: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	defer chanDB.Close()
@@ -181,15 +203,28 @@ func Main() error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	tlsCfg, restCreds, restProxyDest, err := getTLSConfig(cfg)
+	tlsCfg, restCreds, restProxyDest, err := getTLSConfig(
+		cfg.TLSCertPath, cfg.TLSKeyPath, cfg.TLSExtraIPs,
+		cfg.TLSExtraDomains, cfg.RPCListeners,
+	)
 	if err != nil {
+		err := fmt.Errorf("Unable to load TLS credentials: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 
 	serverCreds := credentials.NewTLS(tlsCfg)
 	serverOpts := []grpc.ServerOption{grpc.Creds(serverCreds)}
 
-	restDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(*restCreds)}
+	// For our REST dial options, we'll still use TLS, but also increase
+	// the max message size that we'll decode to allow clients to hit
+	// endpoints which return more data such as the DescribeGraph call.
+	restDialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(*restCreds),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(1 * 1024 * 1024 * 50),
+		),
+	}
 
 	// Before starting the wallet, we'll create and start our Neutrino
 	// light client instance, if enabled, in order to allow it to sync
@@ -203,10 +238,13 @@ func Main() error {
 		neutrinoBackend, neutrinoCleanUp, err := initNeutrinoBackend(
 			mainChain.ChainDir,
 		)
-		defer neutrinoCleanUp()
 		if err != nil {
+			err := fmt.Errorf("Unable to initialize neutrino "+
+				"backend: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
+		defer neutrinoCleanUp()
 		neutrinoCS = neutrinoBackend
 	}
 
@@ -221,15 +259,65 @@ func Main() error {
 	// this information.
 	walletInitParams.Birthday = time.Now()
 
+	// getListeners is a closure that creates listeners from the
+	// RPCListeners defined in the config. It also returns a cleanup
+	// closure and the server options to use for the GRPC server.
+	getListeners := func() ([]net.Listener, func(), []grpc.ServerOption,
+		error) {
+
+		var grpcListeners []net.Listener
+		for _, grpcEndpoint := range cfg.RPCListeners {
+			// Start a gRPC server listening for HTTP/2
+			// connections.
+			lis, err := lncfg.ListenOnAddress(grpcEndpoint)
+			if err != nil {
+				ltndLog.Errorf("unable to listen on %s",
+					grpcEndpoint)
+				return nil, nil, nil, err
+			}
+			grpcListeners = append(grpcListeners, lis)
+		}
+
+		cleanup := func() {
+			for _, lis := range grpcListeners {
+				lis.Close()
+			}
+		}
+		return grpcListeners, cleanup, serverOpts, nil
+	}
+
+	// walletUnlockerListeners is a closure we'll hand to the wallet
+	// unlocker, that will be called when it needs listeners for its GPRC
+	// server.
+	walletUnlockerListeners := func() ([]net.Listener, func(),
+		[]grpc.ServerOption, error) {
+
+		// If we have chosen to start with a dedicated listener for the
+		// wallet unlocker, we return it directly, and empty server
+		// options to deactivate TLS.
+		// TODO(halseth): any point in adding TLS support for custom
+		// listeners?
+		if lisCfg.WalletUnlocker != nil {
+			return []net.Listener{lisCfg.WalletUnlocker}, func() {},
+				[]grpc.ServerOption{}, nil
+		}
+
+		// Otherwise we'll return the regular listeners.
+		return getListeners()
+	}
+
 	// We wait until the user provides a password over RPC. In case lnd is
 	// started with the --noseedbackup flag, we use the default password
 	// for wallet encryption.
 	if !cfg.NoSeedBackup {
 		params, err := waitForWalletPassword(
-			cfg.RPCListeners, cfg.RESTListeners, serverOpts,
-			restDialOpts, restProxyDest, tlsCfg,
+			cfg.RESTListeners, restDialOpts, restProxyDest, tlsCfg,
+			walletUnlockerListeners,
 		)
 		if err != nil {
+			err := fmt.Errorf("Unable to set up wallet password "+
+				"listeners: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 
@@ -251,7 +339,9 @@ func Main() error {
 			networkDir, macaroons.IPLockChecker,
 		)
 		if err != nil {
-			srvrLog.Errorf("unable to create macaroon service: %v", err)
+			err := fmt.Errorf("Unable to set up macaroon "+
+				"authentication: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 		defer macaroonService.Close()
@@ -259,7 +349,8 @@ func Main() error {
 		// Try to unlock the macaroon store with the private password.
 		err = macaroonService.CreateUnlock(&privateWalletPw)
 		if err != nil {
-			srvrLog.Errorf("unable to unlock macaroons: %v", err)
+			err := fmt.Errorf("Unable to unlock macaroons: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 
@@ -272,8 +363,9 @@ func Main() error {
 				cfg.ReadMacPath, cfg.InvoiceMacPath,
 			)
 			if err != nil {
-				ltndLog.Errorf("unable to create macaroon "+
-					"files: %v", err)
+				err := fmt.Errorf("Unable to create macaroons "+
+					"%v", err)
+				ltndLog.Error(err)
 				return err
 			}
 		}
@@ -288,7 +380,8 @@ func Main() error {
 		walletInitParams.Wallet, neutrinoCS,
 	)
 	if err != nil {
-		fmt.Printf("unable to create chain control: %v\n", err)
+		err := fmt.Errorf("Unable to create chain control: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 
@@ -306,6 +399,8 @@ func Main() error {
 		},
 	})
 	if err != nil {
+		err := fmt.Errorf("Unable to derive node private key: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	idPrivKey.Curve = btcec.S256()
@@ -319,11 +414,14 @@ func Main() error {
 	// If the watchtower client should be active, open the client database.
 	// This is done here so that Close always executes when lndMain returns.
 	var towerClientDB *wtdb.ClientDB
-	if cfg.WtClient.IsActive() {
+	if cfg.WtClient.Active {
 		var err error
 		towerClientDB, err = wtdb.OpenClientDB(graphDir)
 		if err != nil {
-			ltndLog.Errorf("Unable to open watchtower client db: %v", err)
+			err := fmt.Errorf("Unable to open watchtower client "+
+				"database: %v", err)
+			ltndLog.Error(err)
+			return err
 		}
 		defer towerClientDB.Close()
 	}
@@ -339,7 +437,9 @@ func Main() error {
 
 		towerDB, err := wtdb.OpenTowerDB(towerDBDir)
 		if err != nil {
-			ltndLog.Errorf("Unable to open watchtower db: %v", err)
+			err := fmt.Errorf("Unable to open watchtower "+
+				"database: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 		defer towerDB.Close()
@@ -353,6 +453,9 @@ func Main() error {
 			},
 		)
 		if err != nil {
+			err := fmt.Errorf("Unable to derive watchtower "+
+				"private key: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 
@@ -371,13 +474,16 @@ func Main() error {
 			ChainHash:   *activeNetParams.GenesisHash,
 		}, lncfg.NormalizeAddresses)
 		if err != nil {
-			ltndLog.Errorf("Unable to configure watchtower: %v", err)
+			err := fmt.Errorf("Unable to configure watchtower: %v",
+				err)
+			ltndLog.Error(err)
 			return err
 		}
 
 		tower, err = watchtower.New(wtConfig)
 		if err != nil {
-			ltndLog.Errorf("Unable to create watchtower: %v", err)
+			err := fmt.Errorf("Unable to create watchtower: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 	}
@@ -389,7 +495,8 @@ func Main() error {
 		idPrivKey, walletInitParams.ChansToRestore,
 	)
 	if err != nil {
-		srvrLog.Errorf("unable to create server: %v\n", err)
+		err := fmt.Errorf("Unable to create server: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 
@@ -398,44 +505,74 @@ func Main() error {
 	// it at will.
 	atplCfg, err := initAutoPilot(server, cfg.Autopilot)
 	if err != nil {
-		ltndLog.Errorf("unable to init autopilot: %v", err)
+		err := fmt.Errorf("Unable to initialize autopilot: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 
 	atplManager, err := autopilot.NewManager(atplCfg)
 	if err != nil {
-		ltndLog.Errorf("unable to create autopilot manager: %v", err)
+		err := fmt.Errorf("Unable to create autopilot manager: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	if err := atplManager.Start(); err != nil {
-		ltndLog.Errorf("unable to start autopilot manager: %v", err)
+		err := fmt.Errorf("Unable to start autopilot manager: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	defer atplManager.Stop()
 
+	// rpcListeners is a closure we'll hand to the rpc server, that will be
+	// called when it needs listeners for its GPRC server.
+	rpcListeners := func() ([]net.Listener, func(), []grpc.ServerOption,
+		error) {
+
+		// If we have chosen to start with a dedicated listener for the
+		// rpc server, we return it directly, and empty server options
+		// to deactivate TLS.
+		// TODO(halseth): any point in adding TLS support for custom
+		// listeners?
+		if lisCfg.RPCListener != nil {
+			return []net.Listener{lisCfg.RPCListener}, func() {},
+				[]grpc.ServerOption{}, nil
+		}
+
+		// Otherwise we'll return the regular listeners.
+		return getListeners()
+	}
+
 	// Initialize, and register our implementation of the gRPC interface
 	// exported by the rpcServer.
 	rpcServer, err := newRPCServer(
-		server, macaroonService, cfg.SubRPCServers, serverOpts,
-		restDialOpts, restProxyDest, atplManager, server.invoices,
-		tower, tlsCfg,
+		server, macaroonService, cfg.SubRPCServers, restDialOpts,
+		restProxyDest, atplManager, server.invoices, tower, tlsCfg,
+		rpcListeners,
 	)
 	if err != nil {
-		srvrLog.Errorf("unable to start RPC server: %v", err)
+		err := fmt.Errorf("Unable to create RPC server: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	if err := rpcServer.Start(); err != nil {
+		err := fmt.Errorf("Unable to start RPC server: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	defer rpcServer.Stop()
 
-	// If we're not in simnet mode, We'll wait until we're fully synced to
-	// continue the start up of the remainder of the daemon. This ensures
-	// that we don't accept any possibly invalid state transitions, or
+	// If we're not in regtest or simnet mode, We'll wait until we're fully
+	// synced to continue the start up of the remainder of the daemon. This
+	// ensures that we don't accept any possibly invalid state transitions, or
 	// accept channels with spent funds.
-	if !(cfg.Bitcoin.SimNet || cfg.Litecoin.SimNet) {
+	if !(cfg.Bitcoin.RegTest || cfg.Bitcoin.SimNet ||
+		cfg.Litecoin.RegTest || cfg.Litecoin.SimNet) {
+
 		_, bestHeight, err := activeChainControl.chainIO.GetBestBlock()
 		if err != nil {
+			err := fmt.Errorf("Unable to determine chain tip: %v",
+				err)
+			ltndLog.Error(err)
 			return err
 		}
 
@@ -449,6 +586,9 @@ func Main() error {
 
 			synced, _, err := activeChainControl.wallet.IsSynced()
 			if err != nil {
+				err := fmt.Errorf("Unable to determine if "+
+					"wallet is synced: %v", err)
+				ltndLog.Error(err)
 				return err
 			}
 
@@ -461,6 +601,9 @@ func Main() error {
 
 		_, bestHeight, err = activeChainControl.chainIO.GetBestBlock()
 		if err != nil {
+			err := fmt.Errorf("Unable to determine chain tip: %v",
+				err)
+			ltndLog.Error(err)
 			return err
 		}
 
@@ -471,7 +614,8 @@ func Main() error {
 	// With all the relevant chains initialized, we can finally start the
 	// server itself.
 	if err := server.Start(); err != nil {
-		srvrLog.Errorf("unable to start server: %v\n", err)
+		err := fmt.Errorf("Unable to start server: %v", err)
+		ltndLog.Error(err)
 		return err
 	}
 	defer server.Stop()
@@ -481,15 +625,17 @@ func Main() error {
 	// stopped together with the autopilot service.
 	if cfg.Autopilot.Active {
 		if err := atplManager.StartAgent(); err != nil {
-			ltndLog.Errorf("unable to start autopilot agent: %v",
+			err := fmt.Errorf("Unable to start autopilot agent: %v",
 				err)
+			ltndLog.Error(err)
 			return err
 		}
 	}
 
 	if cfg.Watchtower.Active {
 		if err := tower.Start(); err != nil {
-			ltndLog.Errorf("Unable to start watchtower: %v", err)
+			err := fmt.Errorf("Unable to start watchtower: %v", err)
+			ltndLog.Error(err)
 			return err
 		}
 		defer tower.Stop()
@@ -503,18 +649,21 @@ func Main() error {
 
 // getTLSConfig returns a TLS configuration for the gRPC server and credentials
 // and a proxy destination for the REST reverse proxy.
-func getTLSConfig(cfg *config) (*tls.Config, *credentials.TransportCredentials,
-	string, error) {
+func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
+	tlsExtraDomains []string, rpcListeners []net.Addr) (*tls.Config,
+	*credentials.TransportCredentials, string, error) {
 
 	// Ensure we create TLS key and certificate if they don't exist
-	if !fileExists(cfg.TLSCertPath) && !fileExists(cfg.TLSKeyPath) {
-		err := genCertPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+	if !fileExists(tlsCertPath) && !fileExists(tlsKeyPath) {
+		err := genCertPair(
+			tlsCertPath, tlsKeyPath, tlsExtraIPs, tlsExtraDomains,
+		)
 		if err != nil {
 			return nil, nil, "", err
 		}
 	}
 
-	certData, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+	certData, err := tls.LoadX509KeyPair(tlsCertPath, tlsKeyPath)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -528,17 +677,19 @@ func getTLSConfig(cfg *config) (*tls.Config, *credentials.TransportCredentials,
 	if time.Now().After(cert.NotAfter) {
 		ltndLog.Info("TLS certificate is expired, generating a new one")
 
-		err := os.Remove(cfg.TLSCertPath)
+		err := os.Remove(tlsCertPath)
 		if err != nil {
 			return nil, nil, "", err
 		}
 
-		err = os.Remove(cfg.TLSKeyPath)
+		err = os.Remove(tlsKeyPath)
 		if err != nil {
 			return nil, nil, "", err
 		}
 
-		err = genCertPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+		err = genCertPair(
+			tlsCertPath, tlsKeyPath, tlsExtraIPs, tlsExtraDomains,
+		)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -551,12 +702,12 @@ func getTLSConfig(cfg *config) (*tls.Config, *credentials.TransportCredentials,
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	restCreds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
+	restCreds, err := credentials.NewClientTLSFromFile(tlsCertPath, "")
 	if err != nil {
 		return nil, nil, "", err
 	}
 
-	restProxyDest := cfg.RPCListeners[0].String()
+	restProxyDest := rpcListeners[0].String()
 	switch {
 	case strings.Contains(restProxyDest, "0.0.0.0"):
 		restProxyDest = strings.Replace(
@@ -591,7 +742,9 @@ func fileExists(name string) bool {
 //
 // This function is adapted from https://github.com/btcsuite/btcd and
 // https://github.com/btcsuite/btcutil
-func genCertPair(certFile, keyFile string) error {
+func genCertPair(certFile, keyFile string, tlsExtraIPs,
+	tlsExtraDomains []string) error {
+
 	rpcsLog.Infof("Generating TLS certificates...")
 
 	org := "lnd autogenerated cert"
@@ -635,7 +788,7 @@ func genCertPair(certFile, keyFile string) error {
 	}
 
 	// Add extra IPs to the slice.
-	for _, ip := range cfg.TLSExtraIPs {
+	for _, ip := range tlsExtraIPs {
 		ipAddr := net.ParseIP(ip)
 		if ipAddr != nil {
 			addIP(ipAddr)
@@ -654,7 +807,7 @@ func genCertPair(certFile, keyFile string) error {
 	if host != "localhost" {
 		dnsNames = append(dnsNames, "localhost")
 	}
-	dnsNames = append(dnsNames, cfg.TLSExtraDomains...)
+	dnsNames = append(dnsNames, tlsExtraDomains...)
 
 	// Also add fake hostnames for unix sockets, otherwise hostname
 	// verification will fail in the client.
@@ -812,13 +965,23 @@ type WalletUnlockParams struct {
 // waitForWalletPassword will spin up gRPC and REST endpoints for the
 // WalletUnlocker server, and block until a password is provided by
 // the user to this RPC server.
-func waitForWalletPassword(grpcEndpoints, restEndpoints []net.Addr,
-	serverOpts []grpc.ServerOption, restDialOpts []grpc.DialOption,
-	restProxyDest string, tlsConf *tls.Config) (*WalletUnlockParams, error) {
+func waitForWalletPassword(restEndpoints []net.Addr,
+	restDialOpts []grpc.DialOption, restProxyDest string,
+	tlsConf *tls.Config, getListeners rpcListeners) (
+	*WalletUnlockParams, error) {
+
+	// Start a gRPC server listening for HTTP/2 connections, solely used
+	// for getting the encryption password from the client.
+	listeners, cleanup, serverOpts, err := getListeners()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 
 	// Set up a new PasswordService, which will listen for passwords
 	// provided over RPC.
 	grpcServer := grpc.NewServer(serverOpts...)
+	defer grpcServer.GracefulStop()
 
 	chainConfig := cfg.Bitcoin
 	if registeredChains.PrimaryChain() == litecoinChain {
@@ -842,28 +1005,14 @@ func waitForWalletPassword(grpcEndpoints, restEndpoints []net.Addr,
 	// password is the last thing to be printed to the console.
 	var wg sync.WaitGroup
 
-	for _, grpcEndpoint := range grpcEndpoints {
-		// Start a gRPC server listening for HTTP/2 connections, solely
-		// used for getting the encryption password from the client.
-		lis, err := lncfg.ListenOnAddress(grpcEndpoint)
-		if err != nil {
-			ltndLog.Errorf(
-				"password RPC server unable to listen on %s",
-				grpcEndpoint,
-			)
-			return nil, err
-		}
-		defer lis.Close()
-
+	for _, lis := range listeners {
 		wg.Add(1)
-		go func() {
-			rpcsLog.Infof(
-				"password RPC server listening on %s",
-				lis.Addr(),
-			)
+		go func(lis net.Listener) {
+			rpcsLog.Infof("password RPC server listening on %s",
+				lis.Addr())
 			wg.Done()
 			grpcServer.Serve(lis)
-		}()
+		}(lis)
 	}
 
 	// Start a REST proxy for our gRPC server above.
@@ -873,7 +1022,7 @@ func waitForWalletPassword(grpcEndpoints, restEndpoints []net.Addr,
 
 	mux := proxy.NewServeMux()
 
-	err := lnrpc.RegisterWalletUnlockerHandlerFromEndpoint(
+	err = lnrpc.RegisterWalletUnlockerHandlerFromEndpoint(
 		ctx, mux, restProxyDest, restDialOpts,
 	)
 	if err != nil {

@@ -14,13 +14,14 @@ func DefaultConfig() *Config {
 	return &Config{}
 }
 
-// GetMissionControlConfig returns the mission control config based on this sub
-// server config.
-func GetMissionControlConfig(cfg *Config) *routing.MissionControlConfig {
-	return &routing.MissionControlConfig{
+// GetRoutingConfig returns the routing config based on this sub server config.
+func GetRoutingConfig(cfg *Config) *RoutingConfig {
+	return &RoutingConfig{
 		AprioriHopProbability: routing.DefaultAprioriHopProbability,
 		MinRouteProbability:   routing.DefaultMinRouteProbability,
-		PaymentAttemptPenalty: routing.DefaultPaymentAttemptPenalty,
-		PenaltyHalfLife:       routing.DefaultPenaltyHalfLife,
+		AttemptCost: routing.DefaultPaymentAttemptPenalty.
+			ToSatoshis(),
+		PenaltyHalfLife: routing.DefaultPenaltyHalfLife,
+		MaxMcHistory:    routing.DefaultMaxMcHistory,
 	}
 }

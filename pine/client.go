@@ -169,7 +169,7 @@ func NewAddress(t uint8, change bool, netParams *chaincfg.Params) (btcutil.Addre
 
 // FetchInputInfo returns information about an unspent transaction input
 // belonging to this wallet.
-func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
+func FetchInputInfo(prevOut *wire.OutPoint) (*rpc.Utxo, error) {
 	fmt.Println("[PINE]: pine→FetchInputInfo")
 
 	client, err := getClient()
@@ -189,8 +189,7 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 		return nil, err
 	}
 
-	txOut := wire.NewTxOut(response.Value, response.PkScript)
-	return txOut, nil
+	return response.Utxo, nil
 }
 
 // SignOutputRaw signs a transaction based on the passed sign descriptor.

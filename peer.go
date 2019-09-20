@@ -30,10 +30,6 @@ import (
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
-var (
-	numNodes int32
-)
-
 const (
 	// pingInterval is the interval at which ping messages are sent.
 	pingInterval = 1 * time.Minute
@@ -80,12 +76,6 @@ type newChannelMsg struct {
 type closeMsg struct {
 	cid lnwire.ChannelID
 	msg lnwire.Message
-}
-
-// chanSnapshotReq is a message sent by outside subsystems to a peer in order
-// to gain a snapshot of the peer's currently active channels.
-type chanSnapshotReq struct {
-	resp chan []*channeldb.ChannelSnapshot
 }
 
 // pendingUpdate describes the pending state of a closing channel.
@@ -396,16 +386,6 @@ func (p *peer) initGossipSync() {
 		// bootstrapper to ensure we can find and connect to non-channel
 		// peers.
 		p.server.authGossiper.InitSyncState(p)
-
-	// If the remote peer has the initial sync feature bit set, then we'll
-	// being the synchronization protocol to exchange authenticated channel
-	// graph edges/vertexes, but only if they don't know of the new gossip
-	// queries.
-	case p.remoteLocalFeatures.HasFeature(lnwire.InitialRoutingSync):
-		srvrLog.Infof("Requesting full table sync with %x",
-			p.pubKeyBytes[:])
-
-		go p.server.authGossiper.SynchronizeNode(p)
 	}
 }
 
@@ -570,7 +550,6 @@ func (p *peer) addLink(chanPoint *wire.OutPoint,
 		DecodeHopIterators:     p.server.sphinx.DecodeHopIterators,
 		ExtractErrorEncrypter:  p.server.sphinx.ExtractErrorEncrypter,
 		FetchLastChannelUpdate: p.server.fetchLastChanUpdate(),
-		DebugHTLC:              cfg.DebugHTLC,
 		HodlMask:               cfg.Hodl.Mask(),
 		Registry:               p.server.invoices,
 		Switch:                 p.server.htlcSwitch,
@@ -595,6 +574,10 @@ func (p *peer) addLink(chanPoint *wire.OutPoint,
 		MaxFeeUpdateTimeout:     htlcswitch.DefaultMaxLinkFeeUpdateTimeout,
 		OutgoingCltvRejectDelta: p.outgoingCltvRejectDelta,
 		TowerClient:             p.server.towerClient,
+		MaxOutgoingCltvExpiry:   cfg.MaxOutgoingCltvExpiry,
+		MaxFeeAllocation:        cfg.MaxChannelFeeAllocation,
+		NotifyActiveChannel:     p.server.channelNotifier.NotifyActiveChannelEvent,
+		NotifyInactiveChannel:   p.server.channelNotifier.NotifyInactiveChannelEvent,
 	}
 
 	link := htlcswitch.NewChannelLink(linkCfg, lnChan)
@@ -726,7 +709,6 @@ type msgStream struct {
 
 	mtx sync.Mutex
 
-	bufSize      uint32
 	producerSema chan struct{}
 
 	wg   sync.WaitGroup

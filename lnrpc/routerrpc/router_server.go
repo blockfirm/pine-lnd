@@ -249,7 +249,7 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 		s.cfg.RouterBackend.SelfNode, destNode, amtMsat,
 		&routing.RestrictParams{
 			FeeLimit: feeLimit,
-		},
+		}, nil,
 	)
 	if err != nil {
 		return nil, err
@@ -310,6 +310,11 @@ func (s *Server) SendToRoute(ctx context.Context,
 func marshallError(sendError error) (*Failure, error) {
 	response := &Failure{}
 
+	if sendError == htlcswitch.ErrUnreadableFailureMessage {
+		response.Code = Failure_UNREADABLE_FAILURE
+		return response, nil
+	}
+
 	fErr, ok := sendError.(*htlcswitch.ForwardingError)
 	if !ok {
 		return nil, sendError
@@ -317,8 +322,9 @@ func marshallError(sendError error) (*Failure, error) {
 
 	switch onionErr := fErr.FailureMessage.(type) {
 
-	case *lnwire.FailUnknownPaymentHash:
-		response.Code = Failure_UNKNOWN_PAYMENT_HASH
+	case *lnwire.FailIncorrectDetails:
+		response.Code = Failure_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS
+		response.Height = onionErr.Height()
 
 	case *lnwire.FailIncorrectPaymentAmount:
 		response.Code = Failure_INCORRECT_PAYMENT_AMOUNT
@@ -394,12 +400,11 @@ func marshallError(sendError error) (*Failure, error) {
 
 	case *lnwire.FailPermanentChannelFailure:
 		response.Code = Failure_PERMANENT_CHANNEL_FAILURE
-
 	default:
-		return nil, errors.New("unknown wire error")
+		response.Code = Failure_UNKNOWN_FAILURE
 	}
 
-	response.FailureSourcePubkey = fErr.ErrorSource.SerializeCompressed()
+	response.FailureSourceIndex = uint32(fErr.FailureSourceIdx)
 
 	return response, nil
 }
@@ -432,7 +437,10 @@ func marshallChannelUpdate(update *lnwire.ChannelUpdate) *ChannelUpdate {
 func (s *Server) ResetMissionControl(ctx context.Context,
 	req *ResetMissionControlRequest) (*ResetMissionControlResponse, error) {
 
-	s.cfg.RouterBackend.MissionControl.ResetHistory()
+	err := s.cfg.RouterBackend.MissionControl.ResetHistory()
+	if err != nil {
+		return nil, err
+	}
 
 	return &ResetMissionControlResponse{}, nil
 }
@@ -444,40 +452,44 @@ func (s *Server) QueryMissionControl(ctx context.Context,
 
 	snapshot := s.cfg.RouterBackend.MissionControl.GetHistorySnapshot()
 
-	rpcNodes := make([]*NodeHistory, len(snapshot.Nodes))
-	for i, n := range snapshot.Nodes {
+	rpcNodes := make([]*NodeHistory, 0, len(snapshot.Nodes))
+	for _, n := range snapshot.Nodes {
 		// Copy node struct to prevent loop variable binding bugs.
 		node := n
 
-		channels := make([]*ChannelHistory, len(node.Channels))
-		for j, channel := range node.Channels {
-			channels[j] = &ChannelHistory{
-				ChannelId:    channel.ChannelID,
-				LastFailTime: channel.LastFail.Unix(),
-				MinPenalizeAmtSat: int64(
-					channel.MinPenalizeAmt.ToSatoshis(),
-				),
-				SuccessProb: float32(channel.SuccessProb),
-			}
-		}
-
-		var lastFail int64
-		if node.LastFail != nil {
-			lastFail = node.LastFail.Unix()
-		}
-
-		rpcNodes[i] = &NodeHistory{
+		rpcNode := NodeHistory{
 			Pubkey:       node.Node[:],
-			LastFailTime: lastFail,
-			OtherChanSuccessProb: float32(
-				node.OtherChanSuccessProb,
+			LastFailTime: node.LastFail.Unix(),
+			OtherSuccessProb: float32(
+				node.OtherSuccessProb,
 			),
-			Channels: channels,
 		}
+
+		rpcNodes = append(rpcNodes, &rpcNode)
+	}
+
+	rpcPairs := make([]*PairHistory, 0, len(snapshot.Pairs))
+	for _, p := range snapshot.Pairs {
+		// Prevent binding to loop variable.
+		pair := p
+
+		rpcPair := PairHistory{
+			NodeFrom:  pair.Pair.From[:],
+			NodeTo:    pair.Pair.To[:],
+			Timestamp: pair.Timestamp.Unix(),
+			MinPenalizeAmtSat: int64(
+				pair.MinPenalizeAmt.ToSatoshis(),
+			),
+			SuccessProb:           float32(pair.SuccessProb),
+			LastAttemptSuccessful: pair.LastAttemptSuccessful,
+		}
+
+		rpcPairs = append(rpcPairs, &rpcPair)
 	}
 
 	response := QueryMissionControlResponse{
 		Nodes: rpcNodes,
+		Pairs: rpcPairs,
 	}
 
 	return &response, nil
@@ -540,9 +552,12 @@ func (s *Server) trackPayment(paymentHash lntypes.Hash,
 
 			status.State = PaymentState_SUCCEEDED
 			status.Preimage = result.Preimage[:]
-			status.Route = router.MarshallRoute(
+			status.Route, err = router.MarshallRoute(
 				result.Route,
 			)
+			if err != nil {
+				return err
+			}
 		} else {
 			state, err := marshallFailureReason(
 				result.FailureReason,
@@ -552,9 +567,12 @@ func (s *Server) trackPayment(paymentHash lntypes.Hash,
 			}
 			status.State = state
 			if result.Route != nil {
-				status.Route = router.MarshallRoute(
+				status.Route, err = router.MarshallRoute(
 					result.Route,
 				)
+				if err != nil {
+					return err
+				}
 			}
 		}
 

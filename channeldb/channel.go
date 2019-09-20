@@ -1790,7 +1790,8 @@ func (c *OpenChannel) RemoveFwdPkg(height uint64) error {
 
 // RevocationLogTail returns the "tail", or the end of the current revocation
 // log. This entry represents the last previous state for the remote node's
-// commitment chain. The ChannelDelta returned by this method will always lag one state behind the most current (unrevoked) state of the remote node's
+// commitment chain. The ChannelDelta returned by this method will always lag
+// one state behind the most current (unrevoked) state of the remote node's
 // commitment chain.
 func (c *OpenChannel) RevocationLogTail() (*ChannelCommitment, error) {
 	c.RLock()
@@ -1869,7 +1870,7 @@ func (c *OpenChannel) CommitmentHeight() (uint64, error) {
 		return nil
 	})
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 
 	return height, nil
@@ -2297,23 +2298,6 @@ func serializeChannelCloseSummary(w io.Writer, cs *ChannelCloseSummary) error {
 	return nil
 }
 
-func fetchChannelCloseSummary(tx *bbolt.Tx,
-	chanID []byte) (*ChannelCloseSummary, error) {
-
-	closedChanBucket, err := tx.CreateBucketIfNotExists(closedChannelBucket)
-	if err != nil {
-		return nil, err
-	}
-
-	summaryBytes := closedChanBucket.Get(chanID)
-	if summaryBytes == nil {
-		return nil, fmt.Errorf("closed channel summary not found")
-	}
-
-	summaryReader := bytes.NewReader(summaryBytes)
-	return deserializeCloseChannelSummary(summaryReader)
-}
-
 func deserializeCloseChannelSummary(r io.Reader) (*ChannelCloseSummary, error) {
 	c := &ChannelCloseSummary{}
 
@@ -2676,13 +2660,6 @@ func makeLogKey(updateNum uint64) [8]byte {
 	var key [8]byte
 	byteOrder.PutUint64(key[:], updateNum)
 	return key
-}
-
-// readLogKey parse the first 8- bytes of a byte slice into a uint64.
-//
-// NOTE: The slice must be at least 8 bytes long.
-func readLogKey(b []byte) uint64 {
-	return byteOrder.Uint64(b)
 }
 
 func appendChannelLogEntry(log *bbolt.Bucket,

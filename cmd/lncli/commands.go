@@ -1398,32 +1398,11 @@ func create(ctx *cli.Context) error {
 	client, cleanUp := getWalletUnlockerClient(ctx)
 	defer cleanUp()
 
-	// First, we'll prompt the user for their passphrase twice to ensure
-	// both attempts match up properly.
-	fmt.Printf("Input wallet password: ")
-	pw1, err := terminal.ReadPassword(int(syscall.Stdin))
+	walletPassword, err := capturePassword(
+		"Input wallet password: ", false, walletunlocker.ValidatePassword,
+	)
 	if err != nil {
 		return err
-	}
-	fmt.Println()
-
-	fmt.Printf("Confirm wallet password: ")
-	pw2, err := terminal.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		return err
-	}
-	fmt.Println()
-
-	// If the passwords don't match, then we'll return an error.
-	if !bytes.Equal(pw1, pw2) {
-		return fmt.Errorf("passwords don't match")
-	}
-
-	// If the password length is less than 8 characters, then we'll
-	// return an error.
-	pwErr := walletunlocker.ValidatePassword(pw1)
-	if pwErr != nil {
-		return pwErr
 	}
 
 	// Next, we'll see if the user has 24-word mnemonic they want to use to
@@ -1539,31 +1518,15 @@ mnemonicCheck:
 		// want to use, we'll generate a fresh one with the GenSeed
 		// command.
 		fmt.Println("Your cipher seed can optionally be encrypted.")
-		fmt.Printf("Input your passphrase if you wish to encrypt it " +
+
+		instruction := "Input your passphrase if you wish to encrypt it " +
 			"(or press enter to proceed without a cipher seed " +
-			"passphrase): ")
-		aezeedPass1, err := terminal.ReadPassword(int(syscall.Stdin))
+			"passphrase): "
+		aezeedPass, err = capturePassword(
+			instruction, true, func(_ []byte) error { return nil },
+		)
 		if err != nil {
 			return err
-		}
-		fmt.Println()
-
-		if len(aezeedPass1) != 0 {
-			fmt.Printf("Confirm cipher seed passphrase: ")
-			aezeedPass2, err := terminal.ReadPassword(
-				int(syscall.Stdin),
-			)
-			if err != nil {
-				return err
-			}
-			fmt.Println()
-
-			// If the passwords don't match, then we'll return an
-			// error.
-			if !bytes.Equal(aezeedPass1, aezeedPass2) {
-				return fmt.Errorf("cipher seed pass phrases " +
-					"don't match")
-			}
 		}
 
 		fmt.Println()
@@ -1571,7 +1534,7 @@ mnemonicCheck:
 		fmt.Println()
 
 		genSeedReq := &lnrpc.GenSeedRequest{
-			AezeedPassphrase: aezeedPass1,
+			AezeedPassphrase: aezeedPass,
 		}
 		seedResp, err := client.GenSeed(ctxb, genSeedReq)
 		if err != nil {
@@ -1579,7 +1542,6 @@ mnemonicCheck:
 		}
 
 		cipherSeedMnemonic = seedResp.CipherSeedMnemonic
-		aezeedPass = aezeedPass1
 	}
 
 	// Before we initialize the wallet, we'll display the cipher seed to
@@ -1605,12 +1567,12 @@ mnemonicCheck:
 		"RESTORE THE WALLET!!!")
 
 	// We'll also check to see if they provided any static channel backups,
-	// if so, then we'll also tack these onto the final innit wallet
-	// request.
+	// if so, then we'll also tack these onto the final init wallet request.
+	// We can ignore the errMissingChanBackup error as it's an optional
+	// field.
 	backups, err := parseChanBackups(ctx)
-	if err != nil {
-		return fmt.Errorf("unable to parse chan "+
-			"backups: %v", err)
+	if err != nil && err != errMissingChanBackup {
+		return fmt.Errorf("unable to parse chan backups: %v", err)
 	}
 
 	var chanBackups *lnrpc.ChanBackupSnapshot
@@ -1635,7 +1597,7 @@ mnemonicCheck:
 	// With either the user's prior cipher seed, or a newly generated one,
 	// we'll go ahead and initialize the wallet.
 	req := &lnrpc.InitWalletRequest{
-		WalletPassword:     pw1,
+		WalletPassword:     walletPassword,
 		CipherSeedMnemonic: cipherSeedMnemonic,
 		AezeedPassphrase:   aezeedPass,
 		RecoveryWindow:     recoveryWindow,
@@ -1648,6 +1610,55 @@ mnemonicCheck:
 	fmt.Println("\nlnd successfully initialized!")
 
 	return nil
+}
+
+// capturePassword returns a password value that has been entered twice by the
+// user, to ensure that the user knows what password they have entered. The user
+// will be prompted to retry until the passwords match. If the optional param is
+// true, the function may return an empty byte array if the user opts against
+// using a password.
+func capturePassword(instruction string, optional bool,
+	validate func([]byte) error) ([]byte, error) {
+
+	for {
+		fmt.Printf(instruction)
+		password, err := terminal.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			return nil, err
+		}
+		fmt.Println()
+
+		// Do not require users to repeat password if
+		// it is optional and they are not using one.
+		if len(password) == 0 && optional {
+			return nil, nil
+		}
+
+		// If the password provided is not valid, restart
+		// password capture process from the beginning.
+		if err := validate(password); err != nil {
+			fmt.Println(err.Error())
+			fmt.Println()
+			continue
+		}
+
+		fmt.Println("Confirm password:")
+		passwordConfirmed, err := terminal.ReadPassword(
+			int(syscall.Stdin),
+		)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Println()
+
+		if bytes.Equal(password, passwordConfirmed) {
+			return password, nil
+		}
+
+		fmt.Println("Passwords don't match, " +
+			"please try again")
+		fmt.Println()
+	}
 }
 
 var unlockCommand = cli.Command{
@@ -1868,6 +1879,7 @@ func getInfo(ctx *cli.Context) error {
 		BlockHash           string   `json:"block_hash"`
 		BestHeaderTimestamp int64    `json:"best_header_timestamp"`
 		SyncedToChain       bool     `json:"synced_to_chain"`
+		SyncedToGraph       bool     `json:"synced_to_graph"`
 		Testnet             bool     `json:"testnet"`
 		Chains              []chain  `json:"chains"`
 		Uris                []string `json:"uris"`
@@ -1884,6 +1896,7 @@ func getInfo(ctx *cli.Context) error {
 		BlockHash:           resp.BlockHash,
 		BestHeaderTimestamp: resp.BestHeaderTimestamp,
 		SyncedToChain:       resp.SyncedToChain,
+		SyncedToGraph:       resp.SyncedToGraph,
 		Testnet:             resp.Testnet,
 		Chains:              chains,
 		Uris:                resp.Uris,
@@ -2805,37 +2818,6 @@ func describeGraph(ctx *cli.Context) error {
 	return nil
 }
 
-// normalizeFunc is a factory function which returns a function that normalizes
-// the capacity of edges within the graph. The value of the returned
-// function can be used to either plot the capacities, or to use a weight in a
-// rendering of the graph.
-func normalizeFunc(edges []*lnrpc.ChannelEdge, scaleFactor float64) func(int64) float64 {
-	var (
-		min float64 = math.MaxInt64
-		max float64
-	)
-
-	for _, edge := range edges {
-		// In order to obtain saner values, we reduce the capacity of a
-		// channel to its base 2 logarithm.
-		z := math.Log2(float64(edge.Capacity))
-
-		if z < min {
-			min = z
-		}
-		if z > max {
-			max = z
-		}
-	}
-
-	return func(x int64) float64 {
-		y := math.Log2(float64(x))
-
-		// TODO(roasbeef): results in min being zero
-		return (y - min) / (max - min) * scaleFactor
-	}
-}
-
 var listPaymentsCommand = cli.Command{
 	Name:     "listpayments",
 	Category: "Payments",
@@ -2897,6 +2879,9 @@ func getChanInfo(ctx *cli.Context) error {
 		chanID = ctx.Int64("chan_id")
 	case ctx.Args().Present():
 		chanID, err = strconv.ParseInt(ctx.Args().First(), 10, 64)
+		if err != nil {
+			return fmt.Errorf("error parsing chan_id: %s", err)
+		}
 	default:
 		return fmt.Errorf("chan_id argument missing")
 	}
@@ -2997,6 +2982,10 @@ var queryRoutesCommand = cli.Command{
 			Usage: "(optional) number of blocks the last hop has to reveal " +
 				"the preimage",
 		},
+		cli.BoolFlag{
+			Name:  "use_mc",
+			Usage: "use mission control probabilities",
+		},
 	},
 	Action: actionDecorator(queryRoutes),
 }
@@ -3042,10 +3031,11 @@ func queryRoutes(ctx *cli.Context) error {
 	}
 
 	req := &lnrpc.QueryRoutesRequest{
-		PubKey:         dest,
-		Amt:            amt,
-		FeeLimit:       feeLimit,
-		FinalCltvDelta: int32(ctx.Int("final_cltv_delta")),
+		PubKey:            dest,
+		Amt:               amt,
+		FeeLimit:          feeLimit,
+		FinalCltvDelta:    int32(ctx.Int("final_cltv_delta")),
+		UseMissionControl: ctx.Bool("use_mc"),
 	}
 
 	route, err := client.QueryRoutes(ctxb, req)
@@ -3913,6 +3903,10 @@ var restoreChanBackupCommand = cli.Command{
 	Action: actionDecorator(restoreChanBackup),
 }
 
+// errMissingChanBackup is an error returned when we attempt to parse a channel
+// backup from a CLI command and it is missing.
+var errMissingChanBackup = errors.New("missing channel backup")
+
 func parseChanBackups(ctx *cli.Context) (*lnrpc.RestoreChanBackupRequest, error) {
 	switch {
 	case ctx.IsSet("single_backup"):
@@ -3965,7 +3959,7 @@ func parseChanBackups(ctx *cli.Context) (*lnrpc.RestoreChanBackupRequest, error)
 		}, nil
 
 	default:
-		return nil, nil
+		return nil, errMissingChanBackup
 	}
 }
 
