@@ -662,6 +662,7 @@ func (m *SignOutputRawRequest) GetSignDescriptor() *SignDescriptor {
 }
 
 type SignOutputRawResponse struct {
+	// Witness signature without the hash type flag.
 	Signature            []byte   `protobuf:"bytes,1,opt,name=signature,proto3" json:"signature,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
@@ -1487,7 +1488,10 @@ const _ = grpc.SupportPackageIsVersion4
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type PineClient interface {
+	// SignMessage signs a message using the user's private key.
 	SignMessage(ctx context.Context, in *SignMessageRequest, opts ...grpc.CallOption) (*SignMessageResponse, error)
+	// ListUnspentWitness returns a list of unspent transaction outputs from
+	// the user's wallet.
 	ListUnspentWitness(ctx context.Context, in *ListUnspentWitnessRequest, opts ...grpc.CallOption) (*ListUnspentWitnessResponse, error)
 	// LockOutpoint marks an unspent transaction output as reserved excluding
 	// it from coin selection.
@@ -1501,10 +1505,12 @@ type PineClient interface {
 	FetchInputInfo(ctx context.Context, in *FetchInputInfoRequest, opts ...grpc.CallOption) (*FetchInputInfoResponse, error)
 	// SignOutputRaw signs a transaction.
 	SignOutputRaw(ctx context.Context, in *SignOutputRawRequest, opts ...grpc.CallOption) (*SignOutputRawResponse, error)
+	// ComputeInputScript computes an input script for a transaction.
 	ComputeInputScript(ctx context.Context, in *ComputeInputScriptRequest, opts ...grpc.CallOption) (*ComputeInputScriptResponse, error)
 	// GetRevocationRootKey returns a private key to be used as a revocation root.
 	// TODO: Create an API for getting revocation secrets instead of exposing private keys.
 	GetRevocationRootKey(ctx context.Context, in *GetRevocationRootKeyRequest, opts ...grpc.CallOption) (*GetRevocationRootKeyResponse, error)
+	// DeriveNextKey returns a key descriptor for the next key for the specified key family.
 	DeriveNextKey(ctx context.Context, in *DeriveNextKeyRequest, opts ...grpc.CallOption) (*DeriveNextKeyResponse, error)
 }
 
@@ -1608,7 +1614,10 @@ func (c *pineClient) DeriveNextKey(ctx context.Context, in *DeriveNextKeyRequest
 
 // PineServer is the server API for Pine service.
 type PineServer interface {
+	// SignMessage signs a message using the user's private key.
 	SignMessage(context.Context, *SignMessageRequest) (*SignMessageResponse, error)
+	// ListUnspentWitness returns a list of unspent transaction outputs from
+	// the user's wallet.
 	ListUnspentWitness(context.Context, *ListUnspentWitnessRequest) (*ListUnspentWitnessResponse, error)
 	// LockOutpoint marks an unspent transaction output as reserved excluding
 	// it from coin selection.
@@ -1622,10 +1631,12 @@ type PineServer interface {
 	FetchInputInfo(context.Context, *FetchInputInfoRequest) (*FetchInputInfoResponse, error)
 	// SignOutputRaw signs a transaction.
 	SignOutputRaw(context.Context, *SignOutputRawRequest) (*SignOutputRawResponse, error)
+	// ComputeInputScript computes an input script for a transaction.
 	ComputeInputScript(context.Context, *ComputeInputScriptRequest) (*ComputeInputScriptResponse, error)
 	// GetRevocationRootKey returns a private key to be used as a revocation root.
 	// TODO: Create an API for getting revocation secrets instead of exposing private keys.
 	GetRevocationRootKey(context.Context, *GetRevocationRootKeyRequest) (*GetRevocationRootKeyResponse, error)
+	// DeriveNextKey returns a key descriptor for the next key for the specified key family.
 	DeriveNextKey(context.Context, *DeriveNextKeyRequest) (*DeriveNextKeyResponse, error)
 }
 
