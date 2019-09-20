@@ -223,9 +223,27 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 //
 // NOTE: This is part of the keychain.KeyRing interface.
 func (b *BtcWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error) {
-	var keyDesc KeyDescriptor
+	keyDescriptor, err := pine.DeriveKey(uint32(keyLoc.Family), keyLoc.Index)
+	if err != nil {
+		return KeyDescriptor{}, err
+	}
 
-	db := b.wallet.Database()
+	pubKey, err := btcec.ParsePubKey(keyDescriptor.PublicKey, btcec.S256())
+	if err != nil {
+		return KeyDescriptor{}, err
+	}
+
+	keyLoc = KeyLocator{
+		Family: KeyFamily(keyDescriptor.KeyLocator.KeyFamily),
+		Index:  keyDescriptor.KeyLocator.Index,
+	}
+
+	return KeyDescriptor{
+		PubKey:     pubKey,
+		KeyLocator: keyLoc,
+	}, nil
+
+	/*db := b.wallet.Database()
 	err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
 		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 
@@ -261,7 +279,7 @@ func (b *BtcWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error) {
 		return keyDesc, err
 	}
 
-	return keyDesc, nil
+	return keyDesc, nil*/
 }
 
 // DerivePrivKey attempts to derive the private key that corresponds to the

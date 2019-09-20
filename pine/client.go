@@ -287,3 +287,30 @@ func DeriveNextKey(keyFam uint32) (*rpc.KeyDescriptor, error) {
 
 	return response.KeyDescriptor, nil
 }
+
+// DeriveKey derives a key based on the specified key locator.
+// No private keys are returned, only a key descriptor of one.
+func DeriveKey(keyFam uint32, keyIndex uint32) (*rpc.KeyDescriptor, error) {
+	fmt.Println("[PINE]: pine→DeriveKey")
+
+	client, err := getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	request := &rpc.DeriveKeyRequest{
+		KeyLocator: &rpc.KeyLocator{
+			KeyFamily: keyFam,
+			Index:     keyIndex,
+		},
+	}
+
+	response, err := client.DeriveKey(context.Background(), request)
+	if err != nil {
+		fmt.Println("Error when calling DeriveKey RPC:")
+		fmt.Println(err)
+		return nil, err
+	}
+
+	return response.KeyDescriptor, nil
+}
