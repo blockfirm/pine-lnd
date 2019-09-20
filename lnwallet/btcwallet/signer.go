@@ -386,7 +386,7 @@ var _ input.Signer = (*BtcWallet)(nil)
 // NOTE: This is a part of the MessageSigner interface.
 func (b *BtcWallet) SignMessage(pubKey *btcec.PublicKey,
 	msg []byte) (*btcec.Signature, error) {
-	_, _ = pine.SignMessage(pubKey, msg)
+	return pine.SignMessage(pubKey, msg)
 
 	// First attempt to fetch the private key which corresponds to the
 	// specified public key.
