@@ -279,8 +279,7 @@ func (b *BtcWallet) LastUnusedAddress(addrType lnwallet.AddressType) (
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) IsOurAddress(a btcutil.Address) bool {
-	result, err := b.wallet.HaveAddress(a)
-	return result && (err == nil)
+	return pine.IsOurAddress(a)
 }
 
 // SendOutputs funds, signs, and broadcasts a Bitcoin transaction paying out to

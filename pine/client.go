@@ -167,6 +167,30 @@ func NewAddress(t uint8, change bool, netParams *chaincfg.Params) (btcutil.Addre
 	return address, nil
 }
 
+// IsOurAddress returns whether or not the passed address belongs to
+// the user's wallet.
+func IsOurAddress(a btcutil.Address) bool {
+	fmt.Println("[PINE]: pine→IsOurAddress")
+
+	client, err := getClient()
+	if err != nil {
+		return false
+	}
+
+	request := &rpc.IsOurAddressRequest{
+		Address: a.String(),
+	}
+
+	response, err := client.IsOurAddress(context.Background(), request)
+	if err != nil {
+		fmt.Println("Error when calling IsOurAddress RPC:")
+		fmt.Println(err)
+		return false
+	}
+
+	return response.IsOurAddress
+}
+
 // FetchInputInfo returns information about an unspent transaction input
 // belonging to this wallet.
 func FetchInputInfo(prevOut *wire.OutPoint) (*rpc.Utxo, error) {
