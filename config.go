@@ -224,6 +224,10 @@ type torConfig struct {
 	PrivateKeyPath  string `long:"privatekeypath" description:"The path to the private key of the onion service being created"`
 }
 
+type pineConfig struct {
+	ID string `long:"id" group:"Pine" description:"The ID of the Pine user who spawned the node"`
+}
+
 // config defines the configuration options for lnd.
 //
 // See loadConfig for further details regarding the configuration
@@ -335,6 +339,8 @@ type config struct {
 	Watchtower *lncfg.Watchtower `group:"watchtower" namespace:"watchtower"`
 
 	LegacyProtocol *lncfg.LegacyProtocol `group:"legacyprotocol" namespace:"legacyprotocol"`
+
+	Pine *pineConfig `group:"Pine" namespace:"pine"`
 }
 
 // loadConfig initializes and parses the config using a config file and command

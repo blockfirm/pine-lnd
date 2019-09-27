@@ -50,6 +50,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/lightningnetwork/lnd/pine"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/walletunlocker"
 	"github.com/lightningnetwork/lnd/watchtower"
@@ -133,6 +134,16 @@ func Main(lisCfg ListenerCfg) error {
 	// Show version at startup.
 	ltndLog.Infof("Version: %s, build=%s, logging=%s",
 		build.Version(), build.Deployment, build.LoggingType)
+
+	// Connect to Pine RPC.
+	err = pine.Connect(cfg.Pine.ID)
+	if err != nil {
+		err := fmt.Errorf("Error when connecting to Pine RPC: %v", err)
+		ltndLog.Error(err)
+		return err
+	}
+
+	ltndLog.Infof("Connected to Pine RPC (Pine ID: %s)", cfg.Pine.ID)
 
 	var network string
 	switch {

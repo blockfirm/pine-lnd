@@ -16,47 +16,52 @@ const rpcTarget = "0.0.0.0:8910"
 
 var rpcClient rpc.PineClient
 
-func getClient() (rpc.PineClient, error) {
+func getClient(pineID string) (rpc.PineClient, error) {
 	if rpcClient != nil {
 		return rpcClient, nil
 	}
 
-	conn, err := grpc.Dial(rpcTarget, grpc.WithInsecure())
+	creds := pineCredentials{id: pineID}
+
+	conn, err := grpc.Dial(
+		rpcTarget,
+		grpc.WithInsecure(),
+		grpc.WithPerRPCCredentials(creds),
+	)
+
 	if err != nil {
-		fmt.Println("Error when connecting Pine RPC:")
-		fmt.Println(err)
 		return nil, err
 	}
 
 	return rpc.NewPineClient(conn), nil
 }
 
-func init() {
-	client, err := getClient()
+// Connect connects to the Pine Lightning RPC.
+func Connect(pineID string) error {
+	if pineID == "" {
+		return fmt.Errorf("Pine ID cannot be empty")
+	}
+
+	client, err := getClient(pineID)
 	if err != nil {
-		fmt.Println("Unable to connect to Pine RPC")
-		return
+		return fmt.Errorf("Unable to connect to Pine RPC: %v", err)
 	}
 
 	rpcClient = client
-	fmt.Println("Connected to Pine RPC")
+
+	return nil
 }
 
 // SignMessage signs a message using the Pine Lightning API.
 func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) {
 	fmt.Println("[PINE]: pine→SignMessage")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.SignMessageRequest{
 		PublicKey: pubKey.SerializeUncompressed(),
 		Message:   msg,
 	}
 
-	response, err := client.SignMessage(context.Background(), request)
+	response, err := rpcClient.SignMessage(context.Background(), request)
 	if err != nil {
 		return nil, err
 	}
@@ -69,17 +74,12 @@ func SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) 
 func ListUnspentWitness(minConfs, maxConfs int32) ([]*rpc.Utxo, error) {
 	fmt.Println("[PINE]: pine→ListUnspentWitness")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.ListUnspentWitnessRequest{
 		MinConfirmations: minConfs,
 		MaxConfirmations: maxConfs,
 	}
 
-	response, err := client.ListUnspentWitness(context.Background(), request)
+	response, err := rpcClient.ListUnspentWitness(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling ListUnspentWitness RPC:")
 		fmt.Println(err)
@@ -93,17 +93,12 @@ func ListUnspentWitness(minConfs, maxConfs int32) ([]*rpc.Utxo, error) {
 func LockOutpoint(o wire.OutPoint) error {
 	fmt.Println("[PINE]: pine→LockOutpoint")
 
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
 	request := &rpc.LockOutpointRequest{
 		Hash:  o.Hash.CloneBytes(),
 		Index: o.Index,
 	}
 
-	_, err = client.LockOutpoint(context.Background(), request)
+	_, err := rpcClient.LockOutpoint(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling LockOutpoint RPC:")
 		fmt.Println(err)
@@ -117,17 +112,12 @@ func LockOutpoint(o wire.OutPoint) error {
 func UnlockOutpoint(o wire.OutPoint) error {
 	fmt.Println("[PINE]: pine→UnlockOutpoint")
 
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
 	request := &rpc.UnlockOutpointRequest{
 		Hash:  o.Hash.CloneBytes(),
 		Index: o.Index,
 	}
 
-	_, err = client.UnlockOutpoint(context.Background(), request)
+	_, err := rpcClient.UnlockOutpoint(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling UnlockOutpoint RPC")
 		fmt.Println(err)
@@ -141,17 +131,12 @@ func UnlockOutpoint(o wire.OutPoint) error {
 func NewAddress(t uint8, change bool, netParams *chaincfg.Params) (btcutil.Address, error) {
 	fmt.Println("[PINE]: pine→NewAddress")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.NewAddressRequest{
 		Type:   uint32(t),
 		Change: change,
 	}
 
-	response, err := client.NewAddress(context.Background(), request)
+	response, err := rpcClient.NewAddress(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling NewAddress RPC:")
 		fmt.Println(err)
@@ -172,16 +157,11 @@ func NewAddress(t uint8, change bool, netParams *chaincfg.Params) (btcutil.Addre
 func IsOurAddress(a btcutil.Address) bool {
 	fmt.Println("[PINE]: pine→IsOurAddress")
 
-	client, err := getClient()
-	if err != nil {
-		return false
-	}
-
 	request := &rpc.IsOurAddressRequest{
 		Address: a.String(),
 	}
 
-	response, err := client.IsOurAddress(context.Background(), request)
+	response, err := rpcClient.IsOurAddress(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling IsOurAddress RPC:")
 		fmt.Println(err)
@@ -196,17 +176,12 @@ func IsOurAddress(a btcutil.Address) bool {
 func FetchInputInfo(prevOut *wire.OutPoint) (*rpc.Utxo, error) {
 	fmt.Println("[PINE]: pine→FetchInputInfo")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.FetchInputInfoRequest{
 		Hash:  prevOut.Hash.CloneBytes(),
 		Index: prevOut.Index,
 	}
 
-	response, err := client.FetchInputInfo(context.Background(), request)
+	response, err := rpcClient.FetchInputInfo(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling FetchInputInfo RPC:")
 		fmt.Println(err)
@@ -220,17 +195,12 @@ func FetchInputInfo(prevOut *wire.OutPoint) (*rpc.Utxo, error) {
 func SignOutputRaw(transaction *rpc.Transaction, signDescriptor *rpc.SignDescriptor) ([]byte, error) {
 	fmt.Println("[PINE]: pine→SignOutputRaw")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.SignOutputRawRequest{
 		Transaction:    transaction,
 		SignDescriptor: signDescriptor,
 	}
 
-	response, err := client.SignOutputRaw(context.Background(), request)
+	response, err := rpcClient.SignOutputRaw(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling SignOutputRaw RPC:")
 		fmt.Println(err)
@@ -244,17 +214,12 @@ func SignOutputRaw(transaction *rpc.Transaction, signDescriptor *rpc.SignDescrip
 func ComputeInputScript(transaction *rpc.Transaction, signDescriptor *rpc.SignDescriptor) (*rpc.ComputeInputScriptResponse, error) {
 	fmt.Println("[PINE]: pine→ComputeInputScript")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.ComputeInputScriptRequest{
 		Transaction:    transaction,
 		SignDescriptor: signDescriptor,
 	}
 
-	response, err := client.ComputeInputScript(context.Background(), request)
+	response, err := rpcClient.ComputeInputScript(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling ComputeInputScript RPC:")
 		fmt.Println(err)
@@ -269,14 +234,9 @@ func ComputeInputScript(transaction *rpc.Transaction, signDescriptor *rpc.SignDe
 func GetRevocationRootKey() (*btcec.PrivateKey, error) {
 	fmt.Println("[PINE]: pine→GetRevocationRootKey")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.GetRevocationRootKeyRequest{}
 
-	response, err := client.GetRevocationRootKey(context.Background(), request)
+	response, err := rpcClient.GetRevocationRootKey(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling GetRevocationRootKey RPC:")
 		fmt.Println(err)
@@ -293,16 +253,11 @@ func GetRevocationRootKey() (*btcec.PrivateKey, error) {
 func DeriveNextKey(keyFam uint32) (*rpc.KeyDescriptor, error) {
 	fmt.Println("[PINE]: pine→DeriveNextKey")
 
-	client, err := getClient()
-	if err != nil {
-		return &rpc.KeyDescriptor{}, err
-	}
-
 	request := &rpc.DeriveNextKeyRequest{
 		KeyFamily: keyFam,
 	}
 
-	response, err := client.DeriveNextKey(context.Background(), request)
+	response, err := rpcClient.DeriveNextKey(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling DeriveNextKey RPC:")
 		fmt.Println(err)
@@ -317,11 +272,6 @@ func DeriveNextKey(keyFam uint32) (*rpc.KeyDescriptor, error) {
 func DeriveKey(keyFam uint32, keyIndex uint32) (*rpc.KeyDescriptor, error) {
 	fmt.Println("[PINE]: pine→DeriveKey")
 
-	client, err := getClient()
-	if err != nil {
-		return nil, err
-	}
-
 	request := &rpc.DeriveKeyRequest{
 		KeyLocator: &rpc.KeyLocator{
 			KeyFamily: keyFam,
@@ -329,7 +279,7 @@ func DeriveKey(keyFam uint32, keyIndex uint32) (*rpc.KeyDescriptor, error) {
 		},
 	}
 
-	response, err := client.DeriveKey(context.Background(), request)
+	response, err := rpcClient.DeriveKey(context.Background(), request)
 	if err != nil {
 		fmt.Println("Error when calling DeriveKey RPC:")
 		fmt.Println(err)
