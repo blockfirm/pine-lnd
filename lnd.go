@@ -136,7 +136,7 @@ func Main(lisCfg ListenerCfg) error {
 		build.Version(), build.Deployment, build.LoggingType)
 
 	// Connect to Pine RPC.
-	err = pine.Connect(cfg.Pine.ID)
+	err = pine.Connect(cfg.Pine.RPC, cfg.Pine.ID)
 	if err != nil {
 		err := fmt.Errorf("Error when connecting to Pine RPC: %v", err)
 		ltndLog.Error(err)

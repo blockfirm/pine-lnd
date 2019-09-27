@@ -12,11 +12,9 @@ import (
 	"google.golang.org/grpc"
 )
 
-const rpcTarget = "0.0.0.0:8910"
-
 var rpcClient rpc.PineClient
 
-func getClient(pineID string) (rpc.PineClient, error) {
+func getClient(rpcTarget, pineID string) (rpc.PineClient, error) {
 	if rpcClient != nil {
 		return rpcClient, nil
 	}
@@ -37,12 +35,16 @@ func getClient(pineID string) (rpc.PineClient, error) {
 }
 
 // Connect connects to the Pine Lightning RPC.
-func Connect(pineID string) error {
+func Connect(rpcTarget, pineID string) error {
+	if rpcTarget == "" {
+		return fmt.Errorf("Pine RPC target cannot be empty")
+	}
+
 	if pineID == "" {
 		return fmt.Errorf("Pine ID cannot be empty")
 	}
 
-	client, err := getClient(pineID)
+	client, err := getClient(rpcTarget, pineID)
 	if err != nil {
 		return fmt.Errorf("Unable to connect to Pine RPC: %v", err)
 	}

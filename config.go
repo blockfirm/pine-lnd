@@ -225,7 +225,8 @@ type torConfig struct {
 }
 
 type pineConfig struct {
-	ID string `long:"id" group:"Pine" description:"The ID of the Pine user who spawned the node"`
+	ID  string `long:"id" group:"Pine" description:"The ID of the Pine user who spawned the node"`
+	RPC string `long:"rpc" group:"Pine" description:"The host and port (host:port) of the Pine RPC server"`
 }
 
 // config defines the configuration options for lnd.
