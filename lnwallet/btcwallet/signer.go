@@ -31,6 +31,10 @@ func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, erro
 		return nil, err
 	}
 
+	if utxo == nil {
+		return nil, lnwallet.ErrNotMine
+	}
+
 	return serializers.DeserializeUtxo(utxo)
 
 	// We manually look up the output within the tx store.
