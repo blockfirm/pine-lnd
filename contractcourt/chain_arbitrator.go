@@ -13,6 +13,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/sweep"
 )
@@ -34,7 +35,7 @@ type ResolutionMsg struct {
 	// commitment trace.
 	HtlcIndex uint64
 
-	// Failure will be non-nil if the incoming contract should be cancelled
+	// Failure will be non-nil if the incoming contract should be canceled
 	// all together. This can happen if the outgoing contract was dust, if
 	// if the outgoing HTLC timed out.
 	Failure lnwire.FailureMessage
@@ -131,7 +132,7 @@ type ChainArbitratorConfig struct {
 	Signer input.Signer
 
 	// FeeEstimator will be used to return fee estimates.
-	FeeEstimator lnwallet.FeeEstimator
+	FeeEstimator chainfee.Estimator
 
 	// ChainIO allows us to query the state of the current main chain.
 	ChainIO lnwallet.BlockChainIO
@@ -150,6 +151,10 @@ type ChainArbitratorConfig struct {
 	// NotifyClosedChannel is a function closure that the ChainArbitrator
 	// will use to notify the ChannelNotifier about a newly closed channel.
 	NotifyClosedChannel func(wire.OutPoint)
+
+	// OnionProcessor is used to decode onion payloads for on-chain
+	// resolution.
+	OnionProcessor OnionProcessor
 }
 
 // ChainArbitrator is a sub-system that oversees the on-chain resolution of all
@@ -412,6 +417,36 @@ func (c *ChainArbitrator) Start() error {
 		}
 
 		c.activeChannels[chanPoint] = channelArb
+
+		// If the channel has had its commitment broadcasted already,
+		// republish it in case it didn't propagate.
+		if !channel.HasChanStatus(
+			channeldb.ChanStatusCommitBroadcasted,
+		) {
+			continue
+		}
+
+		closeTx, err := channel.BroadcastedCommitment()
+		switch {
+
+		// This can happen for channels that had their closing tx
+		// published before we started storing it to disk.
+		case err == channeldb.ErrNoCloseTx:
+			log.Warnf("Channel %v is in state CommitBroadcasted, "+
+				"but no closing tx to re-publish...", chanPoint)
+			continue
+
+		case err != nil:
+			return err
+		}
+
+		log.Infof("Re-publishing closing tx(%v) for channel %v",
+			closeTx.TxHash(), chanPoint)
+		err = c.cfg.PublishTx(closeTx)
+		if err != nil && err != lnwallet.ErrDoubleSpend {
+			log.Warnf("Unable to broadcast close tx(%v): %v",
+				closeTx.TxHash(), err)
+		}
 	}
 
 	// In addition to the channels that we know to be open, we'll also

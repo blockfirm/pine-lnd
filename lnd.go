@@ -6,6 +6,7 @@ package lnd
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -30,8 +31,6 @@ import (
 
 	"gopkg.in/macaroon-bakery.v2/bakery"
 
-	"golang.org/x/net/context"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
@@ -43,6 +42,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
+	"github.com/lightningnetwork/lnd/chanacceptor"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lncfg"
@@ -117,6 +117,9 @@ type rpcListeners func() ([]net.Listener, func(), []grpc.ServerOption, error)
 // created in the top-level scope of a main method aren't executed if os.Exit()
 // is called.
 func Main(lisCfg ListenerCfg) error {
+	// Hook interceptor for os signals.
+	signal.Intercept()
+
 	// Load the configuration, and parse any command line options. This
 	// function will also set up logging properly.
 	loadedConfig, err := loadConfig()
@@ -125,9 +128,10 @@ func Main(lisCfg ListenerCfg) error {
 	}
 	cfg = loadedConfig
 	defer func() {
-		if logRotator != nil {
-			ltndLog.Info("Shutdown complete")
-			logRotator.Close()
+		ltndLog.Info("Shutdown complete")
+		err := logWriter.Close()
+		if err != nil {
+			ltndLog.Errorf("Could not close log rotator: %v", err)
 		}
 	}()
 
@@ -201,6 +205,7 @@ func Main(lisCfg ListenerCfg) error {
 		graphDir,
 		channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
 		channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
+		channeldb.OptionSetSyncFreelist(cfg.SyncFreelist),
 	)
 	if err != nil {
 		err := fmt.Errorf("Unable to open channeldb: %v", err)
@@ -499,11 +504,14 @@ func Main(lisCfg ListenerCfg) error {
 		}
 	}
 
+	// Initialize the ChainedAcceptor.
+	chainedAcceptor := chanacceptor.NewChainedAcceptor()
+
 	// Set up the core server which will listen for incoming peer
 	// connections.
 	server, err := newServer(
 		cfg.Listeners, chanDB, towerClientDB, activeChainControl,
-		idPrivKey, walletInitParams.ChansToRestore,
+		idPrivKey, walletInitParams.ChansToRestore, chainedAcceptor,
 	)
 	if err != nil {
 		err := fmt.Errorf("Unable to create server: %v", err)
@@ -558,7 +566,7 @@ func Main(lisCfg ListenerCfg) error {
 	rpcServer, err := newRPCServer(
 		server, macaroonService, cfg.SubRPCServers, restDialOpts,
 		restProxyDest, atplManager, server.invoices, tower, tlsCfg,
-		rpcListeners,
+		rpcListeners, chainedAcceptor,
 	)
 	if err != nil {
 		err := fmt.Errorf("Unable to create RPC server: %v", err)
@@ -1008,7 +1016,8 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 		cfg.AdminMacPath, cfg.ReadMacPath, cfg.InvoiceMacPath,
 	}
 	pwService := walletunlocker.New(
-		chainConfig.ChainDir, activeNetParams.Params, macaroonFiles,
+		chainConfig.ChainDir, activeNetParams.Params, !cfg.SyncFreelist,
+		macaroonFiles,
 	)
 	lnrpc.RegisterWalletUnlockerServer(grpcServer, pwService)
 
@@ -1101,7 +1110,8 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 			chainConfig.ChainDir, activeNetParams.Params,
 		)
 		loader := wallet.NewLoader(
-			activeNetParams.Params, netDir, uint32(recoveryWindow),
+			activeNetParams.Params, netDir, !cfg.SyncFreelist,
+			recoveryWindow,
 		)
 
 		// With the seed, we can now use the wallet loader to create

@@ -36,7 +36,20 @@ type commitSweepResolver struct {
 	// chanPoint is the channel point of the original contract.
 	chanPoint wire.OutPoint
 
-	ResolverKit
+	contractResolverKit
+}
+
+// newCommitSweepResolver instantiates a new direct commit output resolver.
+func newCommitSweepResolver(res lnwallet.CommitOutputResolution,
+	broadcastHeight uint32,
+	chanPoint wire.OutPoint, resCfg ResolverConfig) *commitSweepResolver {
+
+	return &commitSweepResolver{
+		contractResolverKit: *newContractResolverKit(resCfg),
+		commitResolution:    res,
+		broadcastHeight:     broadcastHeight,
+		chanPoint:           chanPoint,
+	}
 }
 
 // ResolverKey returns an identifier which should be globally unique for this
@@ -80,7 +93,7 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 			return nil, errResolverShuttingDown
 		}
 
-	case <-c.Quit:
+	case <-c.quit:
 		return nil, errResolverShuttingDown
 	}
 
@@ -89,12 +102,23 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 	isLocalCommitTx := c.commitResolution.MaturityDelay != 0
 
 	if !isLocalCommitTx {
+		// There're two types of commitments, those that have tweaks
+		// for the remote key (us in this case), and those that don't.
+		// We'll rely on the presence of the commitment tweak to to
+		// discern which type of commitment this is.
+		var witnessType input.WitnessType
+		if c.commitResolution.SelfOutputSignDesc.SingleTweak == nil {
+			witnessType = input.CommitSpendNoDelayTweakless
+		} else {
+			witnessType = input.CommitmentNoDelay
+		}
+
 		// We'll craft an input with all the information required for
 		// the sweeper to create a fully valid sweeping transaction to
 		// recover these coins.
 		inp := input.MakeBaseInput(
 			&c.commitResolution.SelfOutPoint,
-			input.CommitmentNoDelay,
+			witnessType,
 			&c.commitResolution.SelfOutputSignDesc,
 			c.broadcastHeight,
 		)
@@ -127,7 +151,7 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 
 			log.Infof("ChannelPoint(%v) commit tx is fully resolved by "+
 				"sweep tx: %v", c.chanPoint, sweepResult.Tx.TxHash())
-		case <-c.Quit:
+		case <-c.quit:
 			return nil, errResolverShuttingDown
 		}
 
@@ -169,7 +193,7 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 			log.Errorf("unable to Checkpoint: %v", err)
 			return nil, err
 		}
-	case <-c.Quit:
+	case <-c.quit:
 		return nil, errResolverShuttingDown
 	}
 
@@ -195,7 +219,7 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 		log.Infof("ChannelPoint(%v) commit tx is fully resolved, at height: %v",
 			c.chanPoint, confInfo.BlockHeight)
 
-	case <-c.Quit:
+	case <-c.quit:
 		return nil, errResolverShuttingDown
 	}
 
@@ -210,7 +234,7 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 //
 // NOTE: Part of the ContractResolver interface.
 func (c *commitSweepResolver) Stop() {
-	close(c.Quit)
+	close(c.quit)
 }
 
 // IsResolved returns true if the stored state in the resolve is fully
@@ -251,44 +275,40 @@ func (c *commitSweepResolver) Encode(w io.Writer) error {
 	return nil
 }
 
-// Decode attempts to decode an encoded ContractResolver from the passed Reader
-// instance, returning an active ContractResolver instance.
-//
-// NOTE: Part of the ContractResolver interface.
-func (c *commitSweepResolver) Decode(r io.Reader) error {
+// newCommitSweepResolverFromReader attempts to decode an encoded
+// ContractResolver from the passed Reader instance, returning an active
+// ContractResolver instance.
+func newCommitSweepResolverFromReader(r io.Reader, resCfg ResolverConfig) (
+	*commitSweepResolver, error) {
+
+	c := &commitSweepResolver{
+		contractResolverKit: *newContractResolverKit(resCfg),
+	}
+
 	if err := decodeCommitResolution(r, &c.commitResolution); err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := binary.Read(r, endian, &c.resolved); err != nil {
-		return err
+		return nil, err
 	}
 	if err := binary.Read(r, endian, &c.broadcastHeight); err != nil {
-		return err
+		return nil, err
 	}
 	_, err := io.ReadFull(r, c.chanPoint.Hash[:])
 	if err != nil {
-		return err
+		return nil, err
 	}
 	err = binary.Read(r, endian, &c.chanPoint.Index)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Previously a sweep tx was deserialized at this point. Refactoring
 	// removed this, but keep in mind that this data may still be present in
 	// the database.
 
-	return nil
-}
-
-// AttachResolverKit should be called once a resolved is successfully decoded
-// from its stored format. This struct delivers a generic tool kit that
-// resolvers need to complete their duty.
-//
-// NOTE: Part of the ContractResolver interface.
-func (c *commitSweepResolver) AttachResolverKit(r ResolverKit) {
-	c.ResolverKit = r
+	return c, nil
 }
 
 // A compile time assertion to ensure commitSweepResolver meets the

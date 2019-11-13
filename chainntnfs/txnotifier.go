@@ -103,6 +103,9 @@ type confNtfnSet struct {
 	// details serves as a cache of the confirmation details of a
 	// transaction that we'll use to determine if a transaction/output
 	// script has already confirmed at the time of registration.
+	// details is also used to make sure that in case of an address reuse
+	// (funds sent to a previously confirmed script) no additional
+	// notification is registered which would lead to an inconsistent state.
 	details *TxConfirmation
 }
 
@@ -601,9 +604,6 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 		return nil, err
 	}
 
-	Log.Infof("New confirmation subscription: %v, num_confs=%v ",
-		ntfn.ConfRequest, numConfs)
-
 	// Before proceeding to register the notification, we'll query our
 	// height hint cache to determine whether a better one exists.
 	//
@@ -622,11 +622,12 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 			ntfn.ConfRequest, err)
 	}
 
+	Log.Infof("New confirmation subscription: conf_id=%d, %v, "+
+		"num_confs=%v height_hint=%d", ntfn.ConfID, ntfn.ConfRequest,
+		numConfs, startHeight)
+
 	n.Lock()
 	defer n.Unlock()
-
-	Log.Infof("New confirmation subscription: conf_id=%d, %v, "+
-		"height_hint=%d", ntfn.ConfID, ntfn.ConfRequest, startHeight)
 
 	confSet, ok := n.confNotifications[ntfn.ConfRequest]
 	if !ok {
@@ -1509,6 +1510,15 @@ func (n *TxNotifier) handleConfDetailsAtTip(confRequest ConfRequest,
 
 	// TODO(wilmer): cancel pending historical rescans if any?
 	confSet := n.confNotifications[confRequest]
+
+	// If we already have details for this request, we don't want to add it
+	// again since we have already dispatched notifications for it.
+	if confSet.details != nil {
+		Log.Warnf("Ignoring address reuse for %s at height %d.",
+			confRequest, details.BlockHeight)
+		return
+	}
+
 	confSet.rescanStatus = rescanComplete
 	confSet.details = details
 

@@ -3,6 +3,7 @@ package sweep
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/txscript"
@@ -10,7 +11,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet/txrules"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 var (
@@ -30,7 +31,7 @@ type inputSet []input.Input
 // inputs are skipped. No input sets with a total value after fees below the
 // dust limit are returned.
 func generateInputPartitionings(sweepableInputs []input.Input,
-	relayFeePerKW, feePerKW lnwallet.SatPerKWeight,
+	relayFeePerKW, feePerKW chainfee.SatPerKWeight,
 	maxInputsPerTx int) ([]inputSet, error) {
 
 	// Calculate dust limit based on the P2WPKH output script of the sweep
@@ -56,7 +57,7 @@ func generateInputPartitionings(sweepableInputs []input.Input,
 	// on the signature length, which is not known yet at this point.
 	yields := make(map[wire.OutPoint]int64)
 	for _, input := range sweepableInputs {
-		size, _, err := getInputWitnessSizeUpperBound(input)
+		size, _, err := input.WitnessType().SizeUpperBound()
 		if err != nil {
 			return nil, fmt.Errorf(
 				"failed adding input weight: %v", err)
@@ -115,7 +116,7 @@ func generateInputPartitionings(sweepableInputs []input.Input,
 // minimizing any negative externalities we cause for the Bitcoin system as a
 // whole.
 func getPositiveYieldInputs(sweepableInputs []input.Input, maxInputs int,
-	feePerKW lnwallet.SatPerKWeight) (int, btcutil.Amount) {
+	feePerKW chainfee.SatPerKWeight) (int, btcutil.Amount) {
 
 	var weightEstimate input.TxWeightEstimator
 
@@ -126,7 +127,7 @@ func getPositiveYieldInputs(sweepableInputs []input.Input, maxInputs int,
 	for idx, input := range sweepableInputs {
 		// Can ignore error, because it has already been checked when
 		// calculating the yields.
-		size, isNestedP2SH, _ := getInputWitnessSizeUpperBound(input)
+		size, isNestedP2SH, _ := input.WitnessType().SizeUpperBound()
 
 		// Keep a running weight estimate of the input set.
 		if isNestedP2SH {
@@ -168,13 +169,13 @@ func getPositiveYieldInputs(sweepableInputs []input.Input, maxInputs int,
 
 // createSweepTx builds a signed tx spending the inputs to a the output script.
 func createSweepTx(inputs []input.Input, outputPkScript []byte,
-	currentBlockHeight uint32, feePerKw lnwallet.SatPerKWeight,
+	currentBlockHeight uint32, feePerKw chainfee.SatPerKWeight,
 	signer input.Signer) (*wire.MsgTx, error) {
 
-	inputs, txWeight, csvCount, cltvCount := getWeightEstimate(inputs)
+	inputs, txWeight := getWeightEstimate(inputs)
 
-	log.Infof("Creating sweep transaction for %v inputs (%v CSV, %v CLTV) "+
-		"using %v sat/kw", len(inputs), csvCount, cltvCount,
+	log.Infof("Creating sweep transaction for %v inputs (%s) "+
+		"using %v sat/kw", len(inputs), inputTypeSummary(inputs),
 		int64(feePerKw))
 
 	txFee := feePerKw.FeeForWeight(txWeight)
@@ -251,60 +252,9 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 	return sweepTx, nil
 }
 
-// getInputWitnessSizeUpperBound returns the maximum length of the witness for
-// the given input if it would be included in a tx. We also return if the
-// output itself is a nested p2sh output, if so then we need to take into
-// account the extra sigScript data size.
-func getInputWitnessSizeUpperBound(inp input.Input) (int, bool, error) {
-	switch inp.WitnessType() {
-
-	// Outputs on a remote commitment transaction that pay directly to us.
-	case input.WitnessKeyHash:
-		fallthrough
-	case input.CommitmentNoDelay:
-		return input.P2WKHWitnessSize, false, nil
-
-	// Outputs on a past commitment transaction that pay directly
-	// to us.
-	case input.CommitmentTimeLock:
-		return input.ToLocalTimeoutWitnessSize, false, nil
-
-	// Outgoing second layer HTLC's that have confirmed within the
-	// chain, and the output they produced is now mature enough to
-	// sweep.
-	case input.HtlcOfferedTimeoutSecondLevel:
-		return input.ToLocalTimeoutWitnessSize, false, nil
-
-	// Incoming second layer HTLC's that have confirmed within the
-	// chain, and the output they produced is now mature enough to
-	// sweep.
-	case input.HtlcAcceptedSuccessSecondLevel:
-		return input.ToLocalTimeoutWitnessSize, false, nil
-
-	// An HTLC on the commitment transaction of the remote party,
-	// that has had its absolute timelock expire.
-	case input.HtlcOfferedRemoteTimeout:
-		return input.AcceptedHtlcTimeoutWitnessSize, false, nil
-
-	// An HTLC on the commitment transaction of the remote party,
-	// that can be swept with the preimage.
-	case input.HtlcAcceptedRemoteSuccess:
-		return input.OfferedHtlcSuccessWitnessSize, false, nil
-
-	// A nested P2SH input that has a p2wkh witness script. We'll mark this
-	// as nested P2SH so the caller can estimate the weight properly
-	// including the sigScript.
-	case input.NestedWitnessKeyHash:
-		return input.P2WKHWitnessSize, true, nil
-	}
-
-	return 0, false, fmt.Errorf("unexpected witness type: %v",
-		inp.WitnessType())
-}
-
 // getWeightEstimate returns a weight estimate for the given inputs.
 // Additionally, it returns counts for the number of csv and cltv inputs.
-func getWeightEstimate(inputs []input.Input) ([]input.Input, int64, int, int) {
+func getWeightEstimate(inputs []input.Input) ([]input.Input, int64) {
 	// We initialize a weight estimator so we can accurately asses the
 	// amount of fees we need to pay for this sweep transaction.
 	//
@@ -319,17 +269,12 @@ func getWeightEstimate(inputs []input.Input) ([]input.Input, int64, int, int) {
 	// For each output, use its witness type to determine the estimate
 	// weight of its witness, and add it to the proper set of spendable
 	// outputs.
-	var (
-		sweepInputs         []input.Input
-		csvCount, cltvCount int
-	)
+	var sweepInputs []input.Input
 	for i := range inputs {
 		inp := inputs[i]
 
-		// For fee estimation purposes, we'll now attempt to obtain an
-		// upper bound on the weight this input will add when fully
-		// populated.
-		size, isNestedP2SH, err := getInputWitnessSizeUpperBound(inp)
+		wt := inp.WitnessType()
+		err := wt.AddWeightEstimation(&weightEstimate)
 		if err != nil {
 			log.Warn(err)
 
@@ -338,26 +283,37 @@ func getWeightEstimate(inputs []input.Input) ([]input.Input, int64, int, int) {
 			continue
 		}
 
-		// If this is a nested P2SH input, then we'll need to factor in
-		// the additional data push within the sigScript.
-		if isNestedP2SH {
-			weightEstimate.AddNestedP2WSHInput(size)
-		} else {
-			weightEstimate.AddWitnessInput(size)
-		}
-
-		switch inp.WitnessType() {
-		case input.CommitmentTimeLock,
-			input.HtlcOfferedTimeoutSecondLevel,
-			input.HtlcAcceptedSuccessSecondLevel:
-			csvCount++
-		case input.HtlcOfferedRemoteTimeout:
-			cltvCount++
-		}
 		sweepInputs = append(sweepInputs, inp)
 	}
 
-	txWeight := int64(weightEstimate.Weight())
+	return sweepInputs, int64(weightEstimate.Weight())
+}
 
-	return sweepInputs, txWeight, csvCount, cltvCount
+// inputSummary returns a string containing a human readable summary about the
+// witness types of a list of inputs.
+func inputTypeSummary(inputs []input.Input) string {
+	// Count each input by the string representation of its witness type.
+	// We also keep track of the keys so we can later sort by them to get
+	// a stable output.
+	counts := make(map[string]uint32)
+	keys := make([]string, 0, len(inputs))
+	for _, i := range inputs {
+		key := i.WitnessType().String()
+		_, ok := counts[key]
+		if !ok {
+			counts[key] = 0
+			keys = append(keys, key)
+		}
+		counts[key]++
+	}
+	sort.Strings(keys)
+
+	// Return a nice string representation of the counts by comma joining a
+	// slice.
+	var parts []string
+	for _, witnessType := range keys {
+		part := fmt.Sprintf("%d %s", counts[witnessType], witnessType)
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
 }

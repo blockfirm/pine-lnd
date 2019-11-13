@@ -12,8 +12,9 @@ import (
 // Type is an 64-bit identifier for a TLV Record.
 type Type uint64
 
-// TypeSet is an unordered set of Types.
-type TypeSet map[Type]struct{}
+// TypeSet is an unordered set of Types. The map item boolean values indicate
+// whether the type that we parsed was known.
+type TypeSet map[Type]bool
 
 // Encoder is a signature for methods that can encode TLV values. An error
 // should be returned if the Encoder cannot support the underlying type of val.
@@ -41,6 +42,14 @@ func SizeVarBytes(e *[]byte) SizeFunc {
 	return func() uint64 {
 		return uint64(len(*e))
 	}
+}
+
+// RecorderProducer is an interface for objects that can produce a Record object
+// capable of encoding and/or decoding the RecordProducer as a Record.
+type RecordProducer interface {
+	// Record returns a Record that can be used to encode or decode the
+	// backing object.
+	Record() Record
 }
 
 // Record holds the required information to encode or decode a TLV record.
@@ -75,6 +84,14 @@ func (f *Record) Encode(w io.Writer) error {
 	var b [8]byte
 
 	return f.encoder(w, f.value, &b)
+}
+
+// Decode read in the TLV record from the passed reader. This is useful when a
+// caller wants decode a *single* TLV record, outside the context of the Stream
+// struct.
+func (f *Record) Decode(r io.Reader, l uint64) error {
+	var b [8]byte
+	return f.decoder(r, f.value, &b, l)
 }
 
 // MakePrimitiveRecord creates a record for common types.

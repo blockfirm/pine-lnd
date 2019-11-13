@@ -28,11 +28,14 @@ import (
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/brontide"
+	"github.com/lightningnetwork/lnd/chanacceptor"
 	"github.com/lightningnetwork/lnd/chanbackup"
+	"github.com/lightningnetwork/lnd/chanfitness"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channelnotifier"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/discovery"
+	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/input"
@@ -42,12 +45,14 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/nat"
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/peernotifier"
 	"github.com/lightningnetwork/lnd/pool"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/localchans"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/ticker"
@@ -86,6 +91,11 @@ var (
 	// ErrPeerNotConnected signals that the server has no connection to the
 	// given peer.
 	ErrPeerNotConnected = errors.New("peer is not connected")
+
+	// ErrServerNotActive indicates that the server has started but hasn't
+	// fully finished the startup process.
+	ErrServerNotActive = errors.New("server is still in the process of " +
+		"starting")
 
 	// ErrServerShuttingDown indicates that the server is in the process of
 	// gracefully exiting.
@@ -159,7 +169,7 @@ type server struct {
 	peerConnectedListeners    map[string][]chan<- lnpeer.Peer
 	peerDisconnectedListeners map[string][]chan<- struct{}
 
-	persistentPeers        map[string]struct{}
+	persistentPeers        map[string]bool
 	persistentPeersBackoff map[string]time.Duration
 	persistentConnReqs     map[string][]*connmgr.ConnReq
 	persistentRetryCancels map[string]chan struct{}
@@ -203,6 +213,8 @@ type server struct {
 
 	authGossiper *discovery.AuthenticatedGossiper
 
+	localChanMgr *localchans.Manager
+
 	utxoNursery *utxoNursery
 
 	sweeper *sweep.UtxoSweeper
@@ -221,9 +233,9 @@ type server struct {
 
 	readPool *pool.Read
 
-	// globalFeatures feature vector which affects HTLCs and thus are also
-	// advertised to other nodes.
-	globalFeatures *lnwire.FeatureVector
+	// featureMgr dispatches feature vectors for various contexts within the
+	// daemon.
+	featureMgr *feature.Manager
 
 	// currentNodeAnn is the node announcement that has been broadcast to
 	// the network upon startup, if the attributes of the node (us) has
@@ -238,6 +250,10 @@ type server struct {
 	// backups are consistent at all times. It interacts with the
 	// channelNotifier to be notified of newly opened and closed channels.
 	chanSubSwapper *chanbackup.SubSwapper
+
+	// chanEventStore tracks the behaviour of channels and their remote peers to
+	// provide insights into their health and performance.
+	chanEventStore *chanfitness.ChannelEventStore
 
 	quit chan struct{}
 
@@ -294,7 +310,8 @@ func noiseDial(idPriv *btcec.PrivateKey) func(net.Addr) (net.Conn, error) {
 func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	towerClientDB *wtdb.ClientDB, cc *chainControl,
 	privKey *btcec.PrivateKey,
-	chansToRestore walletunlocker.ChannelsToRecover) (*server, error) {
+	chansToRestore walletunlocker.ChannelsToRecover,
+	chanPredicate chanacceptor.ChannelAcceptor) (*server, error) {
 
 	var err error
 
@@ -317,6 +334,12 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	// we signal our knowledge of the new TLV onion format.
 	if !cfg.LegacyProtocol.LegacyOnion() {
 		globalFeatures.Set(lnwire.TLVOnionPayloadOptional)
+	}
+
+	// Similarly, we default to the new modern commitment format unless the
+	// legacy commitment config is set to true.
+	if !cfg.LegacyProtocol.LegacyCommitment() {
+		globalFeatures.Set(lnwire.StaticRemoteKeyOptional)
 	}
 
 	var serializedPubKey [33]byte
@@ -347,6 +370,14 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		readBufferPool, cfg.Workers.Read, pool.DefaultWorkerTimeout,
 	)
 
+	featureMgr, err := feature.NewManager(feature.Config{
+		NoTLVOnion:        cfg.LegacyProtocol.LegacyOnion(),
+		NoStaticRemoteKey: cfg.LegacyProtocol.LegacyCommitment(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	s := &server{
 		chanDB:         chanDB,
 		cc:             cc,
@@ -370,7 +401,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		// schedule
 		sphinx: hop.NewOnionProcessor(sphinxRouter),
 
-		persistentPeers:         make(map[string]struct{}),
+		persistentPeers:         make(map[string]bool),
 		persistentPeersBackoff:  make(map[string]time.Duration),
 		persistentConnReqs:      make(map[string][]*connmgr.ConnReq),
 		persistentRetryCancels:  make(map[string]chan struct{}),
@@ -383,9 +414,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		peerConnectedListeners:    make(map[string][]chan<- lnpeer.Peer),
 		peerDisconnectedListeners: make(map[string][]chan<- struct{}),
 
-		globalFeatures: lnwire.NewFeatureVector(globalFeatures,
-			lnwire.GlobalFeatures),
-		quit: make(chan struct{}),
+		featureMgr: featureMgr,
+		quit:       make(chan struct{}),
 	}
 
 	s.witnessBeacon = &preimageBeacon{
@@ -540,7 +570,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	// automatically create an onion service, we'll initiate our Tor
 	// controller and establish a connection to the Tor server.
 	if cfg.Tor.Active && (cfg.Tor.V2 || cfg.Tor.V3) {
-		s.torController = tor.NewController(cfg.Tor.Control)
+		s.torController = tor.NewController(cfg.Tor.Control, cfg.Tor.TargetIPAddress)
 	}
 
 	chanGraph := chanDB.ChannelGraph()
@@ -571,7 +601,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		LastUpdate:           time.Now(),
 		Addresses:            selfAddrs,
 		Alias:                nodeAlias.String(),
-		Features:             s.globalFeatures,
+		Features:             s.featureMgr.Get(feature.SetNodeAnn),
 		Color:                color,
 	}
 	copy(selfNode.PubKeyBytes[:], privKey.PubKey().SerializeCompressed())
@@ -648,6 +678,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			AprioriHopProbability: routingConfig.AprioriHopProbability,
 			PenaltyHalfLife:       routingConfig.PenaltyHalfLife,
 			MaxMcHistory:          routingConfig.MaxMcHistory,
+			AprioriWeight:         routingConfig.AprioriWeight,
+			SelfNode:              selfNode.PubKeyBytes,
 		},
 	)
 	if err != nil {
@@ -735,6 +767,13 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		s.identityPriv.PubKey(),
 	)
 
+	s.localChanMgr = &localchans.Manager{
+		ForAllOutgoingChannels:    s.chanRouter.ForAllOutgoingChannels,
+		PropagateChanPolicyUpdate: s.authGossiper.PropagateChanPolicyUpdate,
+		UpdateForwardingPolicies:  s.htlcSwitch.UpdateForwardingPolicies,
+		FetchChannel:              s.chanDB.FetchChannel,
+	}
+
 	utxnStore, err := newNurseryStore(activeNetParams.GenesisHash, chanDB)
 	if err != nil {
 		srvrLog.Errorf("unable to create nursery store: %v", err)
@@ -745,7 +784,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		sweep.DefaultBatchWindowDuration)
 
 	sweeperStore, err := sweep.NewSweeperStore(
-		chanDB, activeNetParams.GenesisHash,
+		chanDB.DB, activeNetParams.GenesisHash,
 	)
 	if err != nil {
 		srvrLog.Errorf("unable to create sweeper store: %v", err)
@@ -761,7 +800,6 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			return time.NewTimer(sweep.DefaultBatchWindowDuration).C
 		},
 		Notifier:             cc.chainNotifier,
-		ChainIO:              cc.chainIO,
 		Store:                sweeperStore,
 		MaxInputsPerTx:       sweep.DefaultMaxInputsPerTx,
 		MaxSweepAttempts:     sweep.DefaultMaxSweepAttempts,
@@ -868,6 +906,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		Sweeper:             s.sweeper,
 		Registry:            s.invoices,
 		NotifyClosedChannel: s.channelNotifier.NotifyClosedChannelEvent,
+		OnionProcessor:      s.sphinx,
 	}, chanDB)
 
 	s.breachArbiter = newBreachArbiter(&BreachConfig{
@@ -898,6 +937,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	if _, err := rand.Read(chanIDSeed[:]); err != nil {
 		return nil, err
 	}
+
 	s.fundingMgr, err = newFundingManager(fundingConfig{
 		IDKey:              privKey.PubKey(),
 		Wallet:             cc.wallet,
@@ -1012,10 +1052,16 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			peerKey *btcec.PublicKey) error {
 
 			// First, we'll mark this new peer as a persistent peer
-			// for re-connection purposes.
+			// for re-connection purposes. If the peer is not yet
+			// tracked or the user hasn't requested it to be perm,
+			// we'll set false to prevent the server from continuing
+			// to connect to this peer even if the number of
+			// channels with this peer is zero.
 			s.mu.Lock()
 			pubStr := string(peerKey.SerializeCompressed())
-			s.persistentPeers[pubStr] = struct{}{}
+			if _, ok := s.persistentPeers[pubStr]; !ok {
+				s.persistentPeers[pubStr] = false
+			}
 			s.mu.Unlock()
 
 			// With that taken care of, we'll send this channel to
@@ -1059,6 +1105,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		MaxPendingChannels:     cfg.MaxPendingChannels,
 		RejectPush:             cfg.RejectPush,
 		NotifyOpenChannelEvent: s.channelNotifier.NotifyOpenChannelEvent,
+		OpenChannelPredicate:   chanPredicate,
 	})
 	if err != nil {
 		return nil, err
@@ -1086,13 +1133,20 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	// to peer online and offline events.
 	s.peerNotifier = peernotifier.New()
 
+	// Create a channel event store which monitors all open channels.
+	s.chanEventStore = chanfitness.NewChannelEventStore(&chanfitness.Config{
+		SubscribeChannelEvents: s.channelNotifier.SubscribeChannelEvents,
+		SubscribePeerEvents:    s.peerNotifier.SubscribePeerEvents,
+		GetOpenChannels:        s.chanDB.FetchAllOpenChannels,
+	})
+
 	if cfg.WtClient.Active {
 		policy := wtpolicy.DefaultPolicy()
 
 		if cfg.WtClient.SweepFeeRate != 0 {
 			// We expose the sweep fee rate in sat/byte, but the
 			// tower protocol operations on sat/kw.
-			sweepRateSatPerByte := lnwallet.SatPerKVByte(
+			sweepRateSatPerByte := chainfee.SatPerKVByte(
 				1000 * cfg.WtClient.SweepFeeRate,
 			)
 			policy.SweepFeeRate = sweepRateSatPerByte.FeePerKWeight()
@@ -1243,6 +1297,11 @@ func (s *server) Start() error {
 			return
 		}
 
+		if err := s.chanEventStore.Start(); err != nil {
+			startErr = err
+			return
+		}
+
 		// Before we start the connMgr, we'll check to see if we have
 		// any backups to recover. We do this now as we want to ensure
 		// that have all the information we need to handle channel
@@ -1358,6 +1417,7 @@ func (s *server) Stop() error {
 		s.invoices.Stop()
 		s.fundingMgr.Stop()
 		s.chanSubSwapper.Stop()
+		s.chanEventStore.Stop()
 
 		// Disconnect from each active peers to ensure that
 		// peerTerminationWatchers signal completion to each peer.
@@ -1913,7 +1973,7 @@ func (s *server) initTorController() error {
 		Addresses:            newNodeAnn.Addresses,
 		Alias:                newNodeAnn.Alias.String(),
 		Features: lnwire.NewFeatureVector(
-			newNodeAnn.Features, lnwire.GlobalFeatures,
+			newNodeAnn.Features, lnwire.Features,
 		),
 		Color:        newNodeAnn.RGBColor,
 		AuthSigBytes: newNodeAnn.Signature.ToSignatureBytes(),
@@ -2108,8 +2168,11 @@ func (s *server) establishPersistentConnections() error {
 	var numOutboundConns int
 	for pubStr, nodeAddr := range nodeAddrsMap {
 		// Add this peer to the set of peers we should maintain a
-		// persistent connection with.
-		s.persistentPeers[pubStr] = struct{}{}
+		// persistent connection with. We set the value to false to
+		// indicate that we should not continue to reconnect if the
+		// number of channels returns to zero, since this peer has not
+		// been requested as perm by the user.
+		s.persistentPeers[pubStr] = false
 		if _, ok := s.persistentPeersBackoff[pubStr]; !ok {
 			s.persistentPeersBackoff[pubStr] = cfg.MinBackoff
 		}
@@ -2176,15 +2239,20 @@ func (s *server) delayInitialReconnect(connReq *connmgr.ConnReq) {
 // persistent connections to a peer within the server. This is used to avoid
 // persistent connection retries to peers we do not have any open channels with.
 func (s *server) prunePersistentPeerConnection(compressedPubKey [33]byte) {
-	srvrLog.Infof("Pruning peer %x from persistent connections, number of "+
-		"open channels is now zero", compressedPubKey)
-
 	pubKeyStr := string(compressedPubKey[:])
 
 	s.mu.Lock()
-	delete(s.persistentPeers, pubKeyStr)
-	delete(s.persistentPeersBackoff, pubKeyStr)
-	s.cancelConnReqs(pubKeyStr, nil)
+	if perm, ok := s.persistentPeers[pubKeyStr]; ok && !perm {
+		delete(s.persistentPeers, pubKeyStr)
+		delete(s.persistentPeersBackoff, pubKeyStr)
+		s.cancelConnReqs(pubKeyStr, nil)
+		s.mu.Unlock()
+
+		srvrLog.Infof("Pruned peer %x from persistent connections, "+
+			"peer has no open channels", compressedPubKey)
+
+		return
+	}
 	s.mu.Unlock()
 }
 
@@ -2516,7 +2584,7 @@ func (s *server) OutboundPeerConnected(connReq *connmgr.ConnReq, conn net.Conn) 
 		return
 	}
 	if _, ok := s.persistentConnReqs[pubStr]; !ok && connReq != nil {
-		srvrLog.Debugf("Ignoring cancelled outbound connection")
+		srvrLog.Debugf("Ignoring canceled outbound connection")
 		s.connMgr.Remove(connReq.ID())
 		conn.Close()
 		return
@@ -2668,14 +2736,10 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
 		ChainNet:    activeNetParams.Net,
 	}
 
-	// With the brontide connection established, we'll now craft the local
-	// feature vector to advertise to the remote node.
-	localFeatures := lnwire.NewRawFeatureVector()
-
-	// We'll signal that we understand the data loss protection feature,
-	// and also that we support the new gossip query features.
-	localFeatures.Set(lnwire.DataLossProtectRequired)
-	localFeatures.Set(lnwire.GossipQueriesOptional)
+	// With the brontide connection established, we'll now craft the feature
+	// vectors to advertise to the remote node.
+	initFeatures := s.featureMgr.Get(feature.SetInit)
+	legacyFeatures := s.featureMgr.Get(feature.SetLegacyGlobal)
 
 	// Now that we've established a connection, create a peer, and it to the
 	// set of currently active peers. Configure the peer with the incoming
@@ -2684,8 +2748,8 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
 	// htlcs, an extra block is added to prevent the channel from being
 	// closed when the htlc is outstanding and a new block comes in.
 	p, err := newPeer(
-		conn, connReq, s, peerAddr, inbound, localFeatures,
-		cfg.ChanEnableTimeout,
+		conn, connReq, s, peerAddr, inbound, initFeatures,
+		legacyFeatures, cfg.ChanEnableTimeout,
 		defaultOutgoingCltvRejectDelta,
 	)
 	if err != nil {
@@ -3013,7 +3077,7 @@ type openChanReq struct {
 
 	pushAmt lnwire.MilliSatoshi
 
-	fundingFeePerKw lnwallet.SatPerKWeight
+	fundingFeePerKw chainfee.SatPerKWeight
 
 	private bool
 
@@ -3073,7 +3137,11 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
 			Permanent: true,
 		}
 
-		s.persistentPeers[targetPub] = struct{}{}
+		// Since the user requested a permanent connection, we'll set
+		// the entry to true which will tell the server to continue
+		// reconnecting even if the number of channels with this peer is
+		// zero.
+		s.persistentPeers[targetPub] = true
 		if _, ok := s.persistentPeersBackoff[targetPub]; !ok {
 			s.persistentPeersBackoff[targetPub] = cfg.MinBackoff
 		}
@@ -3185,6 +3253,18 @@ func (s *server) OpenChannel(
 		return req.updates, req.err
 	}
 	s.mu.RUnlock()
+
+	// We'll wait until the peer is active before beginning the channel
+	// opening process.
+	select {
+	case <-peer.activeSignal:
+	case <-peer.quit:
+		req.err <- fmt.Errorf("peer %x disconnected", pubKeyBytes)
+		return req.updates, req.err
+	case <-s.quit:
+		req.err <- ErrServerShuttingDown
+		return req.updates, req.err
+	}
 
 	// If the fee rate wasn't specified, then we'll use a default
 	// confirmation target.

@@ -2,7 +2,6 @@ package tlv
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"math"
@@ -21,15 +20,6 @@ var ErrStreamNotCanonical = errors.New("tlv stream is not canonical")
 // ErrRecordTooLarge signals that a decoded record has a length that is too
 // long to parse.
 var ErrRecordTooLarge = errors.New("record is too large")
-
-// ErrUnknownRequiredType is an error returned when decoding an unknown and even
-// type from a Stream.
-type ErrUnknownRequiredType Type
-
-// Error returns a human-readable description of unknown required type.
-func (t ErrUnknownRequiredType) Error() string {
-	return fmt.Sprintf("unknown required type: %d", t)
-}
 
 // Stream defines a TLV stream that can be used for encoding or decoding a set
 // of TLV Records.
@@ -240,11 +230,6 @@ func (s *Stream) decode(r io.Reader, parsedTypes TypeSet) (TypeSet, error) {
 				return nil, err
 			}
 
-		// This record type is unknown to the stream, fail if the type
-		// is even meaning that we are required to understand it.
-		case typ%2 == 0:
-			return nil, ErrUnknownRequiredType(typ)
-
 		// Otherwise, the record type is unknown and is odd, discard the
 		// number of bytes specified by length.
 		default:
@@ -265,7 +250,7 @@ func (s *Stream) decode(r io.Reader, parsedTypes TypeSet) (TypeSet, error) {
 		// Record the successfully decoded or ignored type if the
 		// caller provided an initialized TypeSet.
 		if parsedTypes != nil {
-			parsedTypes[typ] = struct{}{}
+			parsedTypes[typ] = ok
 		}
 
 		// Update our record index so that we can begin our next search

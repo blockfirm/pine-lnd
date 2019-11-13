@@ -5,13 +5,13 @@ require (
 	github.com/NebulousLabs/fastrand v0.0.0-20181203155948-6fb6489aac4e // indirect
 	github.com/NebulousLabs/go-upnp v0.0.0-20180202185039-29b680b06c82
 	github.com/Yawning/aez v0.0.0-20180114000226-4dad034d9db2
-	github.com/btcsuite/btcd v0.0.0-20190824003749-130ea5bddde3
+	github.com/btcsuite/btcd v0.20.0-beta
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f
 	github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d
-	github.com/btcsuite/btcwallet v0.0.0-20190911065739-d5cdeb4b91b0
+	github.com/btcsuite/btcwallet v0.10.0
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.0.0
 	github.com/btcsuite/btcwallet/wallet/txrules v1.0.0
-	github.com/btcsuite/btcwallet/walletdb v1.0.0
+	github.com/btcsuite/btcwallet/walletdb v1.1.0
 	github.com/btcsuite/btcwallet/wtxmgr v1.0.0
 	github.com/btcsuite/fastsha256 v0.0.0-20160815193821-637e65642941
 	github.com/coreos/bbolt v1.3.3
@@ -20,7 +20,7 @@ require (
 	github.com/golang/protobuf v1.3.1
 	github.com/grpc-ecosystem/go-grpc-middleware v1.0.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
-	github.com/grpc-ecosystem/grpc-gateway v0.0.0-20170724004829-f2862b476edc
+	github.com/grpc-ecosystem/grpc-gateway v1.8.6
 	github.com/jackpal/gateway v1.0.5
 	github.com/jackpal/go-nat-pmp v0.0.0-20170405195558-28a68d0c24ad
 	github.com/jessevdk/go-flags v1.4.0
@@ -33,7 +33,7 @@ require (
 	github.com/juju/utils v0.0.0-20180820210520-bf9cc5bdd62d // indirect
 	github.com/juju/version v0.0.0-20180108022336-b64dbd566305 // indirect
 	github.com/kkdai/bstream v0.0.0-20181106074824-b3251f7901ec
-	github.com/lightninglabs/neutrino v0.0.0-20190919020618-7cf83626779e
+	github.com/lightninglabs/neutrino v0.10.1-0.20191111074637-d9b036bf675c
 	github.com/lightningnetwork/lightning-onion v0.0.0-20190909101754-850081b08b6a
 	github.com/lightningnetwork/lnd/queue v1.0.1
 	github.com/lightningnetwork/lnd/ticker v1.0.0
@@ -47,7 +47,7 @@ require (
 	golang.org/x/net v0.0.0-20190206173232-65e2d4e15006
 	golang.org/x/time v0.0.0-20180412165947-fbb02b2291d2
 	google.golang.org/genproto v0.0.0-20190201180003-4b09977fb922
-	google.golang.org/grpc v1.18.0
+	google.golang.org/grpc v1.19.0
 	gopkg.in/errgo.v1 v1.0.1 // indirect
 	gopkg.in/macaroon-bakery.v2 v2.0.1
 	gopkg.in/macaroon.v2 v2.0.0
@@ -60,4 +60,4 @@ replace github.com/lightningnetwork/lnd/queue => ./queue
 
 replace git.schwanenlied.me/yawning/bsaes.git => github.com/Yawning/bsaes v0.0.0-20180720073208-c0276d75487e
 
-go 1.13
+go 1.12

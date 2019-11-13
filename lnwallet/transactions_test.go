@@ -17,6 +17,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/shachain"
 )
@@ -370,7 +371,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 
 	// Manually construct a new LightningChannel.
 	channelState := channeldb.OpenChannel{
-		ChanType:        channeldb.SingleFunder,
+		ChanType:        channeldb.SingleFunderTweaklessBit,
 		ChainHash:       *tc.netParams.GenesisHash,
 		FundingOutpoint: tc.fundingOutpoint,
 		ShortChannelID:  tc.shortChanID,
@@ -800,7 +801,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 			height:       test.commitment.CommitHeight,
 			ourBalance:   test.commitment.LocalBalance,
 			theirBalance: test.commitment.RemoteBalance,
-			feePerKw:     SatPerKWeight(test.commitment.FeePerKw),
+			feePerKw:     chainfee.SatPerKWeight(test.commitment.FeePerKw),
 			dustLimit:    tc.dustLimit,
 			isOurs:       true,
 		}
@@ -843,7 +844,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 		// Generate second-level HTLC transactions for HTLCs in
 		// commitment tx.
 		htlcResolutions, err := extractHtlcResolutions(
-			SatPerKWeight(test.commitment.FeePerKw), true, signer,
+			chainfee.SatPerKWeight(test.commitment.FeePerKw), true, signer,
 			htlcs, keys, channel.localChanCfg, channel.remoteChanCfg,
 			commitTx.TxHash(),
 		)
@@ -999,18 +1000,9 @@ func TestCommitTxStateHint(t *testing.T) {
 	}
 }
 
-// TestCommitmentSpendValidation test the spendability of both outputs within
-// the commitment transaction.
-//
-// The following spending cases are covered by this test:
-//   * Alice's spend from the delayed output on her commitment transaction.
-//   * Bob's spend from Alice's delayed output when she broadcasts a revoked
-//     commitment transaction.
-//   * Bob's spend from his unencumbered output within Alice's commitment
-//     transaction.
-func TestCommitmentSpendValidation(t *testing.T) {
-	t.Parallel()
-
+// testSpendValidation ensures that we're able to spend all outputs in the
+// commitment transaction that we create.
+func testSpendValidation(t *testing.T, tweakless bool) {
 	// We generate a fake output, and the corresponding txin. This output
 	// doesn't need to exist, as we'll only be validating spending from the
 	// transaction that references this.
@@ -1030,18 +1022,28 @@ func TestCommitmentSpendValidation(t *testing.T) {
 	// We also set up set some resources for the commitment transaction.
 	// Each side currently has 1 BTC within the channel, with a total
 	// channel capacity of 2BTC.
-	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(btcec.S256(),
-		testWalletPrivKey)
-	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(btcec.S256(),
-		bobsPrivKey)
+	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(
+		btcec.S256(), testWalletPrivKey,
+	)
+	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(
+		btcec.S256(), bobsPrivKey,
+	)
 
 	revocationPreimage := testHdSeed.CloneBytes()
-	commitSecret, commitPoint := btcec.PrivKeyFromBytes(btcec.S256(),
-		revocationPreimage)
+	commitSecret, commitPoint := btcec.PrivKeyFromBytes(
+		btcec.S256(), revocationPreimage,
+	)
 	revokePubKey := input.DeriveRevocationPubkey(bobKeyPub, commitPoint)
 
 	aliceDelayKey := input.TweakPubKey(aliceKeyPub, commitPoint)
+
+	// Bob will have the channel "force closed" on him, so for the sake of
+	// our commitments, if it's tweakless, his key will just be his regular
+	// pubkey.
 	bobPayKey := input.TweakPubKey(bobKeyPub, commitPoint)
+	if tweakless {
+		bobPayKey = bobKeyPub
+	}
 
 	aliceCommitTweak := input.SingleTweakBytes(commitPoint, aliceKeyPub)
 	bobCommitTweak := input.SingleTweakBytes(commitPoint, bobKeyPub)
@@ -1062,8 +1064,10 @@ func TestCommitmentSpendValidation(t *testing.T) {
 		RevocationKey: revokePubKey,
 		NoDelayKey:    bobPayKey,
 	}
-	commitmentTx, err := CreateCommitTx(*fakeFundingTxIn, keyRing, csvTimeout,
-		channelBalance, channelBalance, DefaultDustLimit())
+	commitmentTx, err := CreateCommitTx(
+		*fakeFundingTxIn, keyRing, csvTimeout, channelBalance,
+		channelBalance, DefaultDustLimit(),
+	)
 	if err != nil {
 		t.Fatalf("unable to create commitment transaction: %v", nil)
 	}
@@ -1088,8 +1092,9 @@ func TestCommitmentSpendValidation(t *testing.T) {
 	})
 
 	// First, we'll test spending with Alice's key after the timeout.
-	delayScript, err := input.CommitScriptToSelf(csvTimeout, aliceDelayKey,
-		revokePubKey)
+	delayScript, err := input.CommitScriptToSelf(
+		csvTimeout, aliceDelayKey, revokePubKey,
+	)
 	if err != nil {
 		t.Fatalf("unable to generate alice delay script: %v", err)
 	}
@@ -1107,8 +1112,9 @@ func TestCommitmentSpendValidation(t *testing.T) {
 		HashType:   txscript.SigHashAll,
 		InputIndex: 0,
 	}
-	aliceWitnessSpend, err := input.CommitSpendTimeout(aliceSelfOutputSigner,
-		signDesc, sweepTx)
+	aliceWitnessSpend, err := input.CommitSpendTimeout(
+		aliceSelfOutputSigner, signDesc, sweepTx,
+	)
 	if err != nil {
 		t.Fatalf("unable to generate delay commit spend witness: %v", err)
 	}
@@ -1177,7 +1183,6 @@ func TestCommitmentSpendValidation(t *testing.T) {
 		KeyDesc: keychain.KeyDescriptor{
 			PubKey: bobKeyPub,
 		},
-		SingleTweak:   bobCommitTweak,
 		WitnessScript: bobScriptP2WKH,
 		SigHashes:     txscript.NewTxSigHashes(sweepTx),
 		Output: &wire.TxOut{
@@ -1187,19 +1192,48 @@ func TestCommitmentSpendValidation(t *testing.T) {
 		HashType:   txscript.SigHashAll,
 		InputIndex: 0,
 	}
-	bobRegularSpend, err := input.CommitSpendNoDelay(bobSigner, signDesc,
-		sweepTx)
+	if !tweakless {
+		signDesc.SingleTweak = bobCommitTweak
+	}
+	bobRegularSpend, err := input.CommitSpendNoDelay(
+		bobSigner, signDesc, sweepTx, tweakless,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob regular spend: %v", err)
 	}
 	sweepTx.TxIn[0].Witness = bobRegularSpend
-	vm, err = txscript.NewEngine(regularOutput.PkScript,
+	vm, err = txscript.NewEngine(
+		regularOutput.PkScript,
 		sweepTx, 0, txscript.StandardVerifyFlags, nil,
-		nil, int64(channelBalance))
+		nil, int64(channelBalance),
+	)
 	if err != nil {
 		t.Fatalf("unable to create engine: %v", err)
 	}
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("bob p2wkh spend is invalid: %v", err)
+	}
+}
+
+// TestCommitmentSpendValidation test the spendability of both outputs within
+// the commitment transaction.
+//
+// The following spending cases are covered by this test:
+//   * Alice's spend from the delayed output on her commitment transaction.
+//   * Bob's spend from Alice's delayed output when she broadcasts a revoked
+//     commitment transaction.
+//   * Bob's spend from his unencumbered output within Alice's commitment
+//     transaction.
+func TestCommitmentSpendValidation(t *testing.T) {
+	t.Parallel()
+
+	// In the modern network, all channels use the new tweakless format,
+	// but we also need to support older nodes that want to open channels
+	// with the legacy format, so we'll test spending in both scenarios.
+	for _, tweakless := range []bool{true, false} {
+		tweakless := tweakless
+		t.Run(fmt.Sprintf("tweak=%v", tweakless), func(t *testing.T) {
+			testSpendValidation(t, tweakless)
+		})
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/ticker"
 )
@@ -102,7 +103,7 @@ type ChanClose struct {
 	// This value is only utilized if the closure type is CloseRegular.
 	// This will be the starting offered fee when the fee negotiation
 	// process for the cooperative closure transaction kicks off.
-	TargetFeePerKw lnwallet.SatPerKWeight
+	TargetFeePerKw chainfee.SatPerKWeight
 
 	// Updates is used by request creator to receive the notifications about
 	// execution of the close channel request.
@@ -431,7 +432,7 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 // forwarding policies for all links have been updated, or the switch shuts
 // down.
 func (s *Switch) UpdateForwardingPolicies(
-	chanPolicies map[wire.OutPoint]*channeldb.ChannelEdgePolicy) {
+	chanPolicies map[wire.OutPoint]ForwardingPolicy) {
 
 	log.Tracef("Updating link policies: %v", newLogClosure(func() string {
 		return spew.Sdump(chanPolicies)
@@ -440,7 +441,7 @@ func (s *Switch) UpdateForwardingPolicies(
 	s.indexMtx.RLock()
 
 	// Update each link in chanPolicies.
-	for targetLink := range chanPolicies {
+	for targetLink, policy := range chanPolicies {
 		cid := lnwire.NewChanIDFromOutPoint(&targetLink)
 
 		link, ok := s.linkIndex[cid]
@@ -450,26 +451,10 @@ func (s *Switch) UpdateForwardingPolicies(
 			continue
 		}
 
-		newPolicy := dbPolicyToFwdingPolicy(
-			chanPolicies[*link.ChannelPoint()],
-		)
-		link.UpdateForwardingPolicy(newPolicy)
+		link.UpdateForwardingPolicy(policy)
 	}
 
 	s.indexMtx.RUnlock()
-}
-
-// dbPolicyToFwdingPolicy is a helper function that converts a channeldb
-// ChannelEdgePolicy into a ForwardingPolicy struct for the purpose of updating
-// the forwarding policy of a link.
-func dbPolicyToFwdingPolicy(policy *channeldb.ChannelEdgePolicy) ForwardingPolicy {
-	return ForwardingPolicy{
-		BaseFee:       policy.FeeBaseMSat,
-		FeeRate:       policy.FeeProportionalMillionths,
-		TimeLockDelta: uint32(policy.TimeLockDelta),
-		MinHTLC:       policy.MinHTLC,
-		MaxHTLC:       policy.MaxHTLC,
-	}
 }
 
 // forward is used in order to find next channel link and apply htlc update.
@@ -791,7 +776,7 @@ func (s *Switch) handleLocalDispatch(pkt *htlcPacket) error {
 
 		// Ensure that the htlc satisfies the outgoing channel policy.
 		currentHeight := atomic.LoadUint32(&s.bestHeight)
-		htlcErr := link.HtlcSatifiesPolicyLocal(
+		htlcErr := link.CheckHtlcTransit(
 			htlc.PaymentHash,
 			htlc.Amount,
 			htlc.Expiry, currentHeight,
@@ -802,22 +787,6 @@ func (s *Switch) handleLocalDispatch(pkt *htlcPacket) error {
 
 			return &ForwardingError{
 				FailureSourceIdx: 0,
-				FailureMessage:   htlcErr,
-			}
-		}
-
-		if link.Bandwidth() < htlc.Amount {
-			err := fmt.Errorf("Link %v has insufficient capacity: "+
-				"need %v, has %v", pkt.outgoingChanID,
-				htlc.Amount, link.Bandwidth())
-			log.Error(err)
-
-			// The update does not need to be populated as the error
-			// will be returned back to the router.
-			htlcErr := lnwire.NewTemporaryChannelFailure(nil)
-			return &ForwardingError{
-				FailureSourceIdx: 0,
-				ExtraMsg:         err.Error(),
 				FailureMessage:   htlcErr,
 			}
 		}
@@ -970,7 +939,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 	// go on chain.
 	case isResolution && htlc.Reason == nil:
 		userErr := fmt.Sprintf("payment was resolved "+
-			"on-chain, then cancelled back (hash=%v, pid=%d)",
+			"on-chain, then canceled back (hash=%v, pid=%d)",
 			paymentHash, paymentID)
 
 		return &ForwardingError{
@@ -1050,69 +1019,38 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// bandwidth.
 		var destination ChannelLink
 		for _, link := range interfaceLinks {
+			var failure lnwire.FailureMessage
+
 			// We'll skip any links that aren't yet eligible for
 			// forwarding.
-			switch {
-			case !link.EligibleToForward():
-				continue
-
-			// If the link doesn't yet have a source chan ID, then
-			// we'll skip it as well.
-			case link.ShortChanID() == hop.Source:
-				continue
+			if !link.EligibleToForward() {
+				failure = &lnwire.FailUnknownNextPeer{}
+			} else {
+				// We'll ensure that the HTLC satisfies the
+				// current forwarding conditions of this target
+				// link.
+				currentHeight := atomic.LoadUint32(&s.bestHeight)
+				failure = link.CheckHtlcForward(
+					htlc.PaymentHash, packet.incomingAmount,
+					packet.amount, packet.incomingTimeout,
+					packet.outgoingTimeout, currentHeight,
+				)
 			}
 
-			// Before we check the link's bandwidth, we'll ensure
-			// that the HTLC satisfies the current forwarding
-			// policy of this target link.
-			currentHeight := atomic.LoadUint32(&s.bestHeight)
-			err := link.HtlcSatifiesPolicy(
-				htlc.PaymentHash, packet.incomingAmount,
-				packet.amount, packet.incomingTimeout,
-				packet.outgoingTimeout, currentHeight,
-			)
-			if err != nil {
-				linkErrs[link.ShortChanID()] = err
-				continue
-			}
-
-			if link.Bandwidth() >= htlc.Amount {
+			// Stop searching if this link can forward the htlc.
+			if failure == nil {
 				destination = link
-
 				break
 			}
+
+			linkErrs[link.ShortChanID()] = failure
 		}
-
-		switch {
-		// If the channel link we're attempting to forward the update
-		// over has insufficient capacity, and didn't violate any
-		// forwarding policies, then we'll cancel the htlc as the
-		// payment cannot succeed.
-		case destination == nil && len(linkErrs) == 0:
-			// If packet was forwarded from another channel link
-			// than we should notify this link that some error
-			// occurred.
-			var failure lnwire.FailureMessage
-			update, err := s.cfg.FetchLastChannelUpdate(
-				packet.outgoingChanID,
-			)
-			if err != nil {
-				failure = &lnwire.FailTemporaryNodeFailure{}
-			} else {
-				failure = lnwire.NewTemporaryChannelFailure(update)
-			}
-
-			addErr := fmt.Errorf("unable to find appropriate "+
-				"channel link insufficient capacity, need "+
-				"%v towards node=%x", htlc.Amount, targetPeerKey)
-
-			return s.failAddPacket(packet, failure, addErr)
 
 		// If we had a forwarding failure due to the HTLC not
 		// satisfying the current policy, then we'll send back an
 		// error, but ensure we send back the error sourced at the
 		// *target* link.
-		case destination == nil && len(linkErrs) != 0:
+		if destination == nil {
 			// At this point, some or all of the links rejected the
 			// HTLC so we couldn't forward it. So we'll try to look
 			// up the error that came from the source.
@@ -1431,7 +1369,7 @@ func (s *Switch) teardownCircuit(pkt *htlcPacket) error {
 // then the last parameter should be the ideal fee-per-kw that will be used as
 // a starting point for close negotiation.
 func (s *Switch) CloseLink(chanPoint *wire.OutPoint, closeType ChannelCloseType,
-	targetFeePerKw lnwallet.SatPerKWeight) (chan interface{},
+	targetFeePerKw chainfee.SatPerKWeight) (chan interface{},
 	chan error) {
 
 	// TODO(roasbeef) abstract out the close updates.
@@ -1877,7 +1815,7 @@ func (s *Switch) reforwardSettleFails(fwdPkgs []*channeldb.FwdPkg) {
 			// commitment state, so we'll forward this to the switch so the
 			// backwards undo can continue.
 			case lnwallet.Fail:
-				// Fetch the reason the HTLC was cancelled so we can
+				// Fetch the reason the HTLC was canceled so we can
 				// continue to propagate it.
 				failPacket := &htlcPacket{
 					outgoingChanID: fwdPkg.Source,

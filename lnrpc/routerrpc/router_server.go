@@ -68,9 +68,17 @@ var (
 			Entity: "offchain",
 			Action: "read",
 		}},
+		"/routerrpc.Router/QueryProbability": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
 		"/routerrpc.Router/ResetMissionControl": {{
 			Entity: "offchain",
 			Action: "write",
+		}},
+		"/routerrpc.Router/BuildRoute": {{
+			Entity: "offchain",
+			Action: "read",
 		}},
 	}
 
@@ -244,11 +252,14 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 	feeLimit := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
 
 	// Finally, we'll query for a route to the destination that can carry
-	// that target amount, we'll only request a single route.
+	// that target amount, we'll only request a single route. Set a
+	// restriction for the default CLTV limit, otherwise we can find a route
+	// that exceeds it and is useless to us.
 	route, err := s.cfg.Router.FindRoute(
 		s.cfg.RouterBackend.SelfNode, destNode, amtMsat,
 		&routing.RestrictParams{
-			FeeLimit: feeLimit,
+			FeeLimit:  feeLimit,
+			CltvLimit: s.cfg.RouterBackend.MaxTotalTimelock,
 		}, nil,
 	)
 	if err != nil {
@@ -347,6 +358,9 @@ func marshallError(sendError error) (*Failure, error) {
 		response.Code = Failure_EXPIRY_TOO_SOON
 		response.ChannelUpdate = marshallChannelUpdate(&onionErr.Update)
 
+	case *lnwire.FailExpiryTooFar:
+		response.Code = Failure_EXPIRY_TOO_FAR
+
 	case *lnwire.FailInvalidOnionVersion:
 		response.Code = Failure_INVALID_ONION_VERSION
 		response.OnionSha_256 = onionErr.OnionSHA256[:]
@@ -400,8 +414,12 @@ func marshallError(sendError error) (*Failure, error) {
 
 	case *lnwire.FailPermanentChannelFailure:
 		response.Code = Failure_PERMANENT_CHANNEL_FAILURE
-	default:
+
+	case nil:
 		response.Code = Failure_UNKNOWN_FAILURE
+
+	default:
+		return nil, fmt.Errorf("cannot marshall failure %T", onionErr)
 	}
 
 	response.FailureSourceIndex = uint32(fErr.FailureSourceIdx)
@@ -452,47 +470,68 @@ func (s *Server) QueryMissionControl(ctx context.Context,
 
 	snapshot := s.cfg.RouterBackend.MissionControl.GetHistorySnapshot()
 
-	rpcNodes := make([]*NodeHistory, 0, len(snapshot.Nodes))
-	for _, n := range snapshot.Nodes {
-		// Copy node struct to prevent loop variable binding bugs.
-		node := n
-
-		rpcNode := NodeHistory{
-			Pubkey:       node.Node[:],
-			LastFailTime: node.LastFail.Unix(),
-			OtherSuccessProb: float32(
-				node.OtherSuccessProb,
-			),
-		}
-
-		rpcNodes = append(rpcNodes, &rpcNode)
-	}
-
 	rpcPairs := make([]*PairHistory, 0, len(snapshot.Pairs))
 	for _, p := range snapshot.Pairs {
 		// Prevent binding to loop variable.
 		pair := p
 
 		rpcPair := PairHistory{
-			NodeFrom:  pair.Pair.From[:],
-			NodeTo:    pair.Pair.To[:],
-			Timestamp: pair.Timestamp.Unix(),
-			MinPenalizeAmtSat: int64(
-				pair.MinPenalizeAmt.ToSatoshis(),
-			),
-			SuccessProb:           float32(pair.SuccessProb),
-			LastAttemptSuccessful: pair.LastAttemptSuccessful,
+			NodeFrom: pair.Pair.From[:],
+			NodeTo:   pair.Pair.To[:],
+			History:  toRPCPairData(&pair.TimedPairResult),
 		}
 
 		rpcPairs = append(rpcPairs, &rpcPair)
 	}
 
 	response := QueryMissionControlResponse{
-		Nodes: rpcNodes,
 		Pairs: rpcPairs,
 	}
 
 	return &response, nil
+}
+
+// toRPCPairData marshalls mission control pair data to the rpc struct.
+func toRPCPairData(data *routing.TimedPairResult) *PairData {
+	rpcData := PairData{
+		MinPenalizeAmtSat: int64(
+			data.MinPenalizeAmt.ToSatoshis(),
+		),
+		LastAttemptSuccessful: data.Success,
+	}
+
+	if !data.Timestamp.IsZero() {
+		rpcData.Timestamp = data.Timestamp.Unix()
+	}
+
+	return &rpcData
+}
+
+// QueryProbability returns the current success probability estimate for a
+// given node pair and amount.
+func (s *Server) QueryProbability(ctx context.Context,
+	req *QueryProbabilityRequest) (*QueryProbabilityResponse, error) {
+
+	fromNode, err := route.NewVertexFromBytes(req.FromNode)
+	if err != nil {
+		return nil, err
+	}
+
+	toNode, err := route.NewVertexFromBytes(req.ToNode)
+	if err != nil {
+		return nil, err
+	}
+
+	amt := lnwire.MilliSatoshi(req.AmtMsat)
+
+	mc := s.cfg.RouterBackend.MissionControl
+	prob := mc.GetProbability(fromNode, toNode, amt)
+	history := mc.GetPairHistorySnapshot(fromNode, toNode)
+
+	return &QueryProbabilityResponse{
+		Probability: prob,
+		History:     toRPCPairData(&history),
+	}, nil
 }
 
 // TrackPayment returns a stream of payment state updates. The stream is
@@ -611,4 +650,50 @@ func marshallFailureReason(reason channeldb.FailureReason) (
 	}
 
 	return 0, errors.New("unknown failure reason")
+}
+
+// BuildRoute builds a route from a list of hop addresses.
+func (s *Server) BuildRoute(ctx context.Context,
+	req *BuildRouteRequest) (*BuildRouteResponse, error) {
+
+	// Unmarshall hop list.
+	hops := make([]route.Vertex, len(req.HopPubkeys))
+	for i, pubkeyBytes := range req.HopPubkeys {
+		pubkey, err := route.NewVertexFromBytes(pubkeyBytes)
+		if err != nil {
+			return nil, err
+		}
+		hops[i] = pubkey
+	}
+
+	// Prepare BuildRoute call parameters from rpc request.
+	var amt *lnwire.MilliSatoshi
+	if req.AmtMsat != 0 {
+		rpcAmt := lnwire.MilliSatoshi(req.AmtMsat)
+		amt = &rpcAmt
+	}
+
+	var outgoingChan *uint64
+	if req.OutgoingChanId != 0 {
+		outgoingChan = &req.OutgoingChanId
+	}
+
+	// Build the route and return it to the caller.
+	route, err := s.cfg.Router.BuildRoute(
+		amt, hops, outgoingChan, req.FinalCltvDelta,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	rpcRoute, err := s.cfg.RouterBackend.MarshallRoute(route)
+	if err != nil {
+		return nil, err
+	}
+
+	routeResp := &BuildRouteResponse{
+		Route: rpcRoute,
+	}
+
+	return routeResp, nil
 }

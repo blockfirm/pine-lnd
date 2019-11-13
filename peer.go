@@ -121,6 +121,10 @@ type peer struct {
 	addr        *lnwire.NetAddress
 	pubKeyBytes [33]byte
 
+	// activeSignal when closed signals that the peer is now active and
+	// ready to process messages.
+	activeSignal chan struct{}
+
 	// startTime is the time this peer connection was successfully
 	// established. It will be zero for peers that did not successfully
 	// Start().
@@ -155,6 +159,10 @@ type peer struct {
 	// channels to the source peer which handled the funding workflow.
 	newChannels chan *newChannelMsg
 
+	// activeMsgStreams is a map from channel id to the channel streams that
+	// proxy messages to individual, active links.
+	activeMsgStreams map[lnwire.ChannelID]*msgStream
+
 	// activeChanCloses is a map that keep track of all the active
 	// cooperative channel closures that are active. Any channel closing
 	// messages are directed to one of these active state machines. Once
@@ -182,21 +190,24 @@ type peer struct {
 
 	server *server
 
-	// localFeatures is the set of local features that we advertised to the
-	// remote node.
-	localFeatures *lnwire.RawFeatureVector
+	// features is the set of features that we advertised to the remote
+	// node.
+	features *lnwire.FeatureVector
+
+	// legacyFeatures is the set of features that we advertised to the remote
+	// node for backwards compatibility. Nodes that have not implemented
+	// flat featurs will still be able to read our feature bits from the
+	// legacy global field, but we will also advertise everything in the
+	// default features field.
+	legacyFeatures *lnwire.FeatureVector
 
 	// outgoingCltvRejectDelta defines the number of blocks before expiry of
 	// an htlc where we don't offer an htlc anymore.
 	outgoingCltvRejectDelta uint32
 
-	// remoteLocalFeatures is the local feature vector received from the
-	// peer during the connection handshake.
-	remoteLocalFeatures *lnwire.FeatureVector
-
-	// remoteGlobalFeatures is the global feature vector received from the
-	// peer during the connection handshake.
-	remoteGlobalFeatures *lnwire.FeatureVector
+	// remoteFeatures is the feature vector received from the peer during
+	// the connection handshake.
+	remoteFeatures *lnwire.FeatureVector
 
 	// failedChannels is a set that tracks channels we consider `failed`.
 	// This is a temporary measure until we have implemented real failure
@@ -226,7 +237,7 @@ var _ lnpeer.Peer = (*peer)(nil)
 // pointer to the main server.
 func newPeer(conn net.Conn, connReq *connmgr.ConnReq, server *server,
 	addr *lnwire.NetAddress, inbound bool,
-	localFeatures *lnwire.RawFeatureVector,
+	features, legacyFeatures *lnwire.FeatureVector,
 	chanActiveTimeout time.Duration,
 	outgoingCltvRejectDelta uint32) (
 	*peer, error) {
@@ -237,12 +248,15 @@ func newPeer(conn net.Conn, connReq *connmgr.ConnReq, server *server,
 		conn: conn,
 		addr: addr,
 
+		activeSignal: make(chan struct{}),
+
 		inbound: inbound,
 		connReq: connReq,
 
 		server: server,
 
-		localFeatures: localFeatures,
+		features:       features,
+		legacyFeatures: legacyFeatures,
 
 		outgoingCltvRejectDelta: outgoingCltvRejectDelta,
 
@@ -252,6 +266,8 @@ func newPeer(conn net.Conn, connReq *connmgr.ConnReq, server *server,
 		addedChannels:  make(map[lnwire.ChannelID]struct{}),
 		activeChannels: make(map[lnwire.ChannelID]*lnwallet.LightningChannel),
 		newChannels:    make(chan *newChannelMsg, 1),
+
+		activeMsgStreams: make(map[lnwire.ChannelID]*msgStream),
 
 		activeChanCloses:   make(map[lnwire.ChannelID]*channelCloser),
 		localCloseChanReqs: make(chan *htlcswitch.ChanClose),
@@ -349,7 +365,8 @@ func (p *peer) Start() error {
 	peerLog.Debugf("Loaded %v active channels from database with "+
 		"NodeKey(%x)", len(activeChans), p.PubKey())
 
-	if err := p.loadActiveChannels(activeChans); err != nil {
+	msgs, err := p.loadActiveChannels(activeChans)
+	if err != nil {
 		return fmt.Errorf("unable to load channels: %v", err)
 	}
 
@@ -362,6 +379,20 @@ func (p *peer) Start() error {
 	go p.channelManager()
 	go p.pingHandler()
 
+	// Signal to any external processes that the peer is now active.
+	close(p.activeSignal)
+
+	// Now that the peer has started up, we send any channel sync messages
+	// that must be resent for borked channels.
+	if len(msgs) > 0 {
+		peerLog.Infof("Sending %d channel sync messages to peer after "+
+			"loading active channels", len(msgs))
+		if err := p.SendMessage(true, msgs...); err != nil {
+			peerLog.Warnf("Failed sending channel sync "+
+				"messages to peer %v: %v", p, err)
+		}
+	}
+
 	return nil
 }
 
@@ -372,7 +403,7 @@ func (p *peer) initGossipSync() {
 
 	// If the remote peer knows of the new gossip queries feature, then
 	// we'll create a new gossipSyncer in the AuthenticatedGossiper for it.
-	case p.remoteLocalFeatures.HasFeature(lnwire.GossipQueriesOptional):
+	case p.remoteFeatures.HasFeature(lnwire.GossipQueriesOptional):
 		srvrLog.Infof("Negotiated chan series queries with %x",
 			p.pubKeyBytes[:])
 
@@ -400,14 +431,22 @@ func (p *peer) QuitSignal() <-chan struct{} {
 }
 
 // loadActiveChannels creates indexes within the peer for tracking all active
-// channels returned by the database.
-func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
+// channels returned by the database. It returns a slice of channel reestablish
+// messages that should be sent to the peer immediately, in case we have borked
+// channels that haven't been closed yet.
+func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) (
+	[]lnwire.Message, error) {
+
+	// Return a slice of messages to send to the peers in case the channel
+	// cannot be loaded normally.
+	var msgs []lnwire.Message
+
 	for _, dbChan := range chans {
 		lnChan, err := lnwallet.NewLightningChannel(
 			p.server.cc.signer, dbChan, p.server.sigPool,
 		)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		chanPoint := &dbChan.FundingOutpoint
@@ -427,6 +466,22 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 		case dbChan.HasChanStatus(channeldb.ChanStatusLocalDataLoss):
 			peerLog.Warnf("ChannelPoint(%v) has status %v, won't "+
 				"start.", chanPoint, dbChan.ChanStatus())
+
+			// To help our peer recover from a potential data loss,
+			// we resend our channel reestablish message if the
+			// channel is in a borked state. We won't process any
+			// channel reestablish message sent from the peer, but
+			// that's okay since the assumption is that we did when
+			// marking the channel borked.
+			chanSync, err := dbChan.ChanSyncMsg()
+			if err != nil {
+				peerLog.Errorf("Unable to create channel "+
+					"reestablish message for channel %v: "+
+					"%v", chanPoint, err)
+				continue
+			}
+
+			msgs = append(msgs, chanSync)
 			continue
 		}
 
@@ -440,7 +495,7 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 
 		_, currentHeight, err := p.server.cc.chainIO.GetBestBlock()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Before we register this new link with the HTLC Switch, we'll
@@ -449,7 +504,7 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 		graph := p.server.chanDB.ChannelGraph()
 		info, p1, p2, err := graph.FetchChannelEdgesByOutpoint(chanPoint)
 		if err != nil && err != channeldb.ErrEdgeNotFound {
-			return err
+			return nil, err
 		}
 
 		// We'll filter out our policy from the directional channel
@@ -497,7 +552,7 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 			*chanPoint,
 		)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Create the link and add it to the switch.
@@ -506,8 +561,8 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 			currentHeight, true,
 		)
 		if err != nil {
-			return fmt.Errorf("unable to add link %v to switch: %v",
-				chanPoint, err)
+			return nil, fmt.Errorf("unable to add link %v to "+
+				"switch: %v", chanPoint, err)
 		}
 
 		p.activeChanMtx.Lock()
@@ -515,7 +570,7 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 		p.activeChanMtx.Unlock()
 	}
 
-	return nil
+	return msgs, nil
 }
 
 // addLink creates and adds a new link from the specified channel.
@@ -901,33 +956,7 @@ func newChanMsgStream(p *peer, cid lnwire.ChannelID) *msgStream {
 			// active goroutine dedicated to this channel.
 			if chanLink == nil {
 				link, err := p.server.htlcSwitch.GetLink(cid)
-				switch {
-
-				// If we failed to find the link in question,
-				// and the message received was a channel sync
-				// message, then this might be a peer trying to
-				// resync closed channel. In this case we'll
-				// try to resend our last channel sync message,
-				// such that the peer can recover funds from
-				// the closed channel.
-				case err != nil && isChanSyncMsg:
-					peerLog.Debugf("Unable to find "+
-						"link(%v) to handle channel "+
-						"sync, attempting to resend "+
-						"last ChanSync message", cid)
-
-					err := p.resendChanSyncMsg(cid)
-					if err != nil {
-						// TODO(halseth): send error to
-						// peer?
-						peerLog.Errorf(
-							"resend failed: %v",
-							err,
-						)
-					}
-					return
-
-				case err != nil:
+				if err != nil {
 					peerLog.Errorf("recv'd update for "+
 						"unknown channel %v from %v: "+
 						"%v", cid, p, err)
@@ -990,8 +1019,6 @@ func (p *peer) readHandler() {
 	discStream := newDiscMsgStream(p)
 	discStream.Start()
 	defer discStream.Stop()
-
-	chanMsgStreams := make(map[lnwire.ChannelID]*msgStream)
 out:
 	for atomic.LoadInt32(&p.disconnect) == 0 {
 		nextMsg, err := p.readNextMessage()
@@ -1038,8 +1065,8 @@ out:
 		}
 
 		var (
-			isChanUpdate bool
 			targetChan   lnwire.ChannelID
+			isLinkUpdate bool
 		)
 
 		switch msg := nextMsg.(type) {
@@ -1081,64 +1108,31 @@ out:
 			}
 
 		case *lnwire.Error:
-			key := p.addr.IdentityKey
+			targetChan = msg.ChanID
+			isLinkUpdate = p.handleError(msg)
 
-			switch {
-			// In the case of an all-zero channel ID we want to
-			// forward the error to all channels with this peer.
-			case msg.ChanID == lnwire.ConnectionWideID:
-				for chanID, chanStream := range chanMsgStreams {
-					chanStream.AddMsg(nextMsg)
+		case *lnwire.ChannelReestablish:
+			targetChan = msg.ChanID
+			isLinkUpdate = p.isActiveChannel(targetChan)
 
-					// Also marked this channel as failed,
-					// so we won't try to restart it on
-					// reconnect with this peer.
-					p.failedChannels[chanID] = struct{}{}
+			// If we failed to find the link in question, and the
+			// message received was a channel sync message, then
+			// this might be a peer trying to resync closed channel.
+			// In this case we'll try to resend our last channel
+			// sync message, such that the peer can recover funds
+			// from the closed channel.
+			if !isLinkUpdate {
+				err := p.resendChanSyncMsg(targetChan)
+				if err != nil {
+					// TODO(halseth): send error to peer?
+					peerLog.Errorf("resend failed: %v",
+						err)
 				}
-
-			// If the channel ID for the error message corresponds
-			// to a pending channel, then the funding manager will
-			// handle the error.
-			case p.server.fundingMgr.IsPendingChannel(msg.ChanID, key):
-				p.server.fundingMgr.processFundingError(msg, key)
-
-			// If not we hand the error to the channel link for
-			// this channel.
-			default:
-				isChanUpdate = true
-				targetChan = msg.ChanID
-
-				// Also marked this channel as failed, so we
-				// won't try to restart it on reconnect with
-				// this peer.
-				p.failedChannels[targetChan] = struct{}{}
 			}
 
-		// TODO(roasbeef): create ChanUpdater interface for the below
-		case *lnwire.UpdateAddHTLC:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.UpdateFulfillHTLC:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.UpdateFailMalformedHTLC:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.UpdateFailHTLC:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.RevokeAndAck:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.CommitSig:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.UpdateFee:
-			isChanUpdate = true
-			targetChan = msg.ChanID
-		case *lnwire.ChannelReestablish:
-			isChanUpdate = true
-			targetChan = msg.ChanID
+		case LinkUpdater:
+			targetChan = msg.TargetChanID()
+			isLinkUpdate = p.isActiveChannel(targetChan)
 
 		case *lnwire.ChannelUpdate,
 			*lnwire.ChannelAnnouncement,
@@ -1157,16 +1151,16 @@ out:
 				"%v", uint16(msg.MsgType()), p)
 		}
 
-		if isChanUpdate {
+		if isLinkUpdate {
 			// If this is a channel update, then we need to feed it
 			// into the channel's in-order message stream.
-			chanStream, ok := chanMsgStreams[targetChan]
+			chanStream, ok := p.activeMsgStreams[targetChan]
 			if !ok {
 				// If a stream hasn't yet been created, then
 				// we'll do so, add it to the map, and finally
 				// start it.
 				chanStream = newChanMsgStream(p, targetChan)
-				chanMsgStreams[targetChan] = chanStream
+				p.activeMsgStreams[targetChan] = chanStream
 				chanStream.Start()
 				defer chanStream.Stop()
 			}
@@ -1182,6 +1176,54 @@ out:
 	p.Disconnect(errors.New("read handler closed"))
 
 	peerLog.Tracef("readHandler for peer %v done", p)
+}
+
+// isActiveChannel returns true if the provided channel id is active, otherwise
+// returns false.
+func (p *peer) isActiveChannel(chanID lnwire.ChannelID) bool {
+	p.activeChanMtx.RLock()
+	_, ok := p.activeChannels[chanID]
+	p.activeChanMtx.RUnlock()
+	return ok
+}
+
+// handleError processes an error message read from the remote peer. The boolean
+// returns indicates whether the message should be delivered to a targeted peer.
+//
+// NOTE: This method should only be called from within the readHandler.
+func (p *peer) handleError(msg *lnwire.Error) bool {
+	key := p.addr.IdentityKey
+
+	switch {
+
+	// In the case of an all-zero channel ID we want to forward the error to
+	// all channels with this peer.
+	case msg.ChanID == lnwire.ConnectionWideID:
+		for chanID, chanStream := range p.activeMsgStreams {
+			chanStream.AddMsg(msg)
+
+			// Also marked this channel as failed, so we won't try
+			// to restart it on reconnect with this peer.
+			p.failedChannels[chanID] = struct{}{}
+		}
+		return false
+
+	// If the channel ID for the error message corresponds to a pending
+	// channel, then the funding manager will handle the error.
+	case p.server.fundingMgr.IsPendingChannel(msg.ChanID, key):
+		p.server.fundingMgr.processFundingError(msg, key)
+		return false
+
+	// If not we hand the error to the channel link for this channel.
+	case p.isActiveChannel(msg.ChanID):
+		// Mark this channel as failed, so we won't try to restart it on
+		// reconnect with this peer.
+		p.failedChannels[msg.ChanID] = struct{}{}
+		return true
+
+	default:
+		return false
+	}
 }
 
 // messageSummary returns a human-readable string that summarizes a
@@ -1250,7 +1292,7 @@ func messageSummary(msg lnwire.Message) string {
 			msg.ChanID, msg.ID, msg.FailureCode)
 
 	case *lnwire.Error:
-		return fmt.Sprintf("chan_id=%v, err=%v", msg.ChanID, string(msg.Data))
+		return fmt.Sprintf("%v", msg.Error())
 
 	case *lnwire.AnnounceSignatures:
 		return fmt.Sprintf("chan_id=%v, short_chan_id=%v", msg.ChannelID,
@@ -2349,44 +2391,63 @@ func (p *peer) WipeChannel(chanPoint *wire.OutPoint) error {
 // handleInitMsg handles the incoming init message which contains global and
 // local features vectors. If feature vectors are incompatible then disconnect.
 func (p *peer) handleInitMsg(msg *lnwire.Init) error {
-	p.remoteLocalFeatures = lnwire.NewFeatureVector(
-		msg.LocalFeatures, lnwire.LocalFeatures,
-	)
-	p.remoteGlobalFeatures = lnwire.NewFeatureVector(
-		msg.GlobalFeatures, lnwire.GlobalFeatures,
+	// First, merge any features from the legacy global features field into
+	// those presented in the local features fields.
+	err := msg.Features.Merge(msg.GlobalFeatures)
+	if err != nil {
+		return fmt.Errorf("unable to merge legacy global featues: %v",
+			err)
+	}
+
+	// Then, finalize the remote feature vector providing the flatteneed
+	// feature bit namespace.
+	p.remoteFeatures = lnwire.NewFeatureVector(
+		msg.Features, lnwire.Features,
 	)
 
 	// Now that we have their features loaded, we'll ensure that they
 	// didn't set any required bits that we don't know of.
-	unknownLocalFeatures := p.remoteLocalFeatures.UnknownRequiredFeatures()
-	if len(unknownLocalFeatures) > 0 {
-		err := fmt.Errorf("Peer set unknown local feature bits: %v",
-			unknownLocalFeatures)
-		return err
-	}
-	unknownGlobalFeatures := p.remoteGlobalFeatures.UnknownRequiredFeatures()
-	if len(unknownGlobalFeatures) > 0 {
-		err := fmt.Errorf("Peer set unknown global feature bits: %v",
-			unknownGlobalFeatures)
+	unknownFeatures := p.remoteFeatures.UnknownRequiredFeatures()
+	if len(unknownFeatures) > 0 {
+		err := fmt.Errorf("peer set unknown feature bits: %v",
+			unknownFeatures)
 		return err
 	}
 
 	// Now that we know we understand their requirements, we'll check to
 	// see if they don't support anything that we deem to be mandatory.
 	switch {
-	case !p.remoteLocalFeatures.HasFeature(lnwire.DataLossProtectRequired):
+	case !p.remoteFeatures.HasFeature(lnwire.DataLossProtectRequired):
 		return fmt.Errorf("data loss protection required")
 	}
 
 	return nil
 }
 
+// LocalFeatures returns the set of global features that has been advertised by
+// the local node. This allows sub-systems that use this interface to gate their
+// behavior off the set of negotiated feature bits.
+//
+// NOTE: Part of the lnpeer.Peer interface.
+func (p *peer) LocalFeatures() *lnwire.FeatureVector {
+	return p.features
+}
+
+// RemoteFeatures returns the set of global features that has been advertised by
+// the remote node. This allows sub-systems that use this interface to gate
+// their behavior off the set of negotiated feature bits.
+//
+// NOTE: Part of the lnpeer.Peer interface.
+func (p *peer) RemoteFeatures() *lnwire.FeatureVector {
+	return p.remoteFeatures
+}
+
 // sendInitMsg sends init message to remote peer which contains our currently
 // supported local and global features.
 func (p *peer) sendInitMsg() error {
 	msg := lnwire.NewInitMessage(
-		p.server.globalFeatures.RawFeatureVector,
-		p.localFeatures,
+		p.legacyFeatures.RawFeatureVector,
+		p.features.RawFeatureVector,
 	)
 
 	return p.writeMessage(msg)
@@ -2405,6 +2466,11 @@ func (p *peer) resendChanSyncMsg(cid lnwire.ChannelID) error {
 	if c.LastChanSyncMsg == nil {
 		return fmt.Errorf("no chan sync message stored for channel %v",
 			cid)
+	}
+
+	if !c.RemotePub.IsEqual(p.IdentityKey()) {
+		return fmt.Errorf("ignoring channel reestablish from "+
+			"peer=%x", p.IdentityKey())
 	}
 
 	peerLog.Debugf("Re-sending channel sync message for channel %v to "+
@@ -2541,6 +2607,14 @@ func (p *peer) AddNewChannel(channel *channeldb.OpenChannel,
 // peer started successfully, and zero otherwise.
 func (p *peer) StartTime() time.Time {
 	return p.startTime
+}
+
+// LinkUpdater is an interface implemented by most messages in BOLT 2 that are
+// allowed to update the channel state.
+type LinkUpdater interface {
+	// TargetChanID returns the channel id of the link for which this
+	// message is intended.
+	TargetChanID() lnwire.ChannelID
 }
 
 // TODO(roasbeef): make all start/stop mutexes a CAS

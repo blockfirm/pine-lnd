@@ -1,4 +1,4 @@
-package channeldb
+package migration_01_to_11
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 )
 
-// migrateInvoices adds invoice htlcs and a separate cltv delta field to the
+// MigrateInvoices adds invoice htlcs and a separate cltv delta field to the
 // invoices.
-func migrateInvoices(tx *bbolt.Tx) error {
+func MigrateInvoices(tx *bbolt.Tx) error {
 	log.Infof("Migrating invoices to new invoice format")
 
 	invoiceB := tx.Bucket(invoiceBucket)
@@ -67,6 +67,11 @@ func migrateInvoices(tx *bbolt.Tx) error {
 		invoice, err := deserializeInvoiceLegacy(invoiceReader)
 		if err != nil {
 			return err
+		}
+
+		if invoice.Terms.State == ContractAccepted {
+			return fmt.Errorf("cannot upgrade with invoice(s) " +
+				"in accepted state, see release notes")
 		}
 
 		// Try to decode the payment request for every possible net to

@@ -63,8 +63,12 @@ bitcoin into.
 # Init bitcoin network env variable:
 $ export NETWORK="simnet" 
 
+# Create persistent volumes for alice and bob.
+docker volume create simnet_lnd_alice
+docker volume create simnet_lnd_bob
+
 # Run the "Alice" container and log into it:
-$ docker-compose run -d --name alice lnd_btc
+$ docker-compose run -d --name alice --volume simnet_lnd_alice:/root/.lnd lnd_btc
 $ docker exec -i -t alice bash
 
 # Generate a new backward compatible nested p2sh address for Alice:
@@ -90,7 +94,7 @@ Connect `Bob` node to `Alice` node.
 
 ```bash
 # Run "Bob" node and log into it:
-$ docker-compose run -d --name bob lnd_btc
+$ docker-compose run -d --name bob --volume simnet_lnd_bob:/root/.lnd lnd_btc
 $ docker exec -i -t bob bash
 
 # Get the identity pubkey of "Bob" node:
@@ -307,7 +311,7 @@ The `Faucet` node address can be found at the [Faucet Lightning Community webpag
 
 ```bash 
 # Run "Alice" container and log into it:
-$ docker-compose up -d "alice"; docker exec -i -t "alice" bash
+$ docker-compose run -d --name alice lnd_btc; docker exec -i -t "alice" bash
 
 # Connect "Alice" to the "Faucet" node:
 alice$ lncli --network=testnet connect <faucet_identity_address>@<faucet_host>

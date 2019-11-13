@@ -302,7 +302,7 @@ out:
 				// safely close the channel used to send epoch
 				// notifications, in order to notify any
 				// listeners that the intent has been
-				// cancelled.
+				// canceled.
 				close(n.blockEpochClients[msg.epochID].epochChan)
 				delete(n.blockEpochClients, msg.epochID)
 			}
@@ -527,17 +527,11 @@ func (n *NeutrinoNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequ
 		// for this height.
 		regFilter, err := n.p2pNode.GetCFilter(
 			*blockHash, wire.GCSFilterRegular,
+			neutrino.NumRetries(5),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("unable to retrieve regular filter for "+
 				"height=%v: %v", scanHeight, err)
-		}
-
-		// If the block has no transactions other than the Coinbase
-		// transaction, then the filter may be nil, so we'll continue
-		// forward int that case.
-		if regFilter == nil {
-			continue
 		}
 
 		// In the case that the filter exists, we'll attempt to see if

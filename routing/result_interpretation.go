@@ -26,6 +26,20 @@ type pairResult struct {
 	success bool
 }
 
+// failPairResult creates a new result struct for a failure.
+func failPairResult(minPenalizeAmt lnwire.MilliSatoshi) pairResult {
+	return pairResult{
+		minPenalizeAmt: minPenalizeAmt,
+	}
+}
+
+// successPairResult creates a new result struct for a success.
+func successPairResult() pairResult {
+	return pairResult{
+		success: true,
+	}
+}
+
 // String returns the human-readable representation of a pair result.
 func (p pairResult) String() string {
 	if p.success {
@@ -251,7 +265,17 @@ func (i *interpretedResult) processPaymentOutcomeIntermediate(
 
 		// All nodes up to the failing pair must have forwarded
 		// successfully.
-		if errorSourceIdx > 2 {
+		if errorSourceIdx > 1 {
+			i.successPairRange(route, 0, errorSourceIdx-2)
+		}
+	}
+
+	reportNode := func() {
+		// Fail only the node that reported the failure.
+		i.failNode(route, errorSourceIdx)
+
+		// Other preceding channels in the route forwarded correctly.
+		if errorSourceIdx > 1 {
 			i.successPairRange(route, 0, errorSourceIdx-2)
 		}
 	}
@@ -287,6 +311,14 @@ func (i *interpretedResult) processPaymentOutcomeIntermediate(
 		*lnwire.FailInvalidOnionKey:
 
 		reportOutgoing()
+
+	// If InvalidOnionPayload is received, we penalize only the reporting
+	// node. We know the preceding hop didn't corrupt the onion, since the
+	// reporting node is able to send the failure. We assume that we
+	// constructed a valid onion payload and that the failure is most likely
+	// an unknown required type or a bug in their implementation.
+	case *lnwire.InvalidOnionPayload:
+		reportNode()
 
 	// If the next hop in the route wasn't known or offline, we'll only
 	// penalize the channel set which we attempted to route over. This is
@@ -364,10 +396,30 @@ func (i *interpretedResult) processPaymentOutcomeUnknown(route *route.Route) {
 	i.failPairRange(route, 0, n-1)
 }
 
-// failNode marks the node indicated by idx in the route as failed. This
-// function intentionally panics when the self node is failed.
+// failNode marks the node indicated by idx in the route as failed. It also
+// marks the incoming and outgoing channels of the node as failed. This function
+// intentionally panics when the self node is failed.
 func (i *interpretedResult) failNode(rt *route.Route, idx int) {
+	// Mark the node as failing.
 	i.nodeFailure = &rt.Hops[idx-1].PubKeyBytes
+
+	// Mark the incoming connection as failed for the node. We intent to
+	// penalize as much as we can for a node level failure, including future
+	// outgoing traffic for this connection. The pair as it is returned by
+	// getPair is directed towards the failed node. Therefore we first
+	// reverse the pair. We don't want to affect the score of the node
+	// sending towards the failing node.
+	incomingChannelIdx := idx - 1
+	inPair, _ := getPair(rt, incomingChannelIdx)
+	i.pairResults[inPair.Reverse()] = failPairResult(0)
+
+	// If not the ultimate node, mark the outgoing connection as failed for
+	// the node.
+	if idx < len(rt.Hops) {
+		outgoingChannelIdx := idx
+		outPair, _ := getPair(rt, outgoingChannelIdx)
+		i.pairResults[outPair] = failPairResult(0)
+	}
 }
 
 // failPairRange marks the node pairs from node fromIdx to node toIdx as failed
@@ -387,8 +439,8 @@ func (i *interpretedResult) failPair(
 	pair, _ := getPair(rt, idx)
 
 	// Report pair in both directions without a minimum penalization amount.
-	i.pairResults[pair] = pairResult{}
-	i.pairResults[pair.Reverse()] = pairResult{}
+	i.pairResults[pair] = failPairResult(0)
+	i.pairResults[pair.Reverse()] = failPairResult(0)
 }
 
 // failPairBalance marks a pair as failed with a minimum penalization amount.
@@ -397,9 +449,7 @@ func (i *interpretedResult) failPairBalance(
 
 	pair, amt := getPair(rt, channelIdx)
 
-	i.pairResults[pair] = pairResult{
-		minPenalizeAmt: amt,
-	}
+	i.pairResults[pair] = failPairResult(amt)
 }
 
 // successPairRange marks the node pairs from node fromIdx to node toIdx as
@@ -410,9 +460,7 @@ func (i *interpretedResult) successPairRange(
 	for idx := fromIdx; idx <= toIdx; idx++ {
 		pair, _ := getPair(rt, idx)
 
-		i.pairResults[pair] = pairResult{
-			success: true,
-		}
+		i.pairResults[pair] = successPairResult()
 	}
 }
 

@@ -56,6 +56,12 @@ func (p *mockPeer) Address() net.Addr { return nil }
 func (p *mockPeer) QuitSignal() <-chan struct{} {
 	return p.quit
 }
+func (p *mockPeer) LocalFeatures() *lnwire.FeatureVector {
+	return nil
+}
+func (p *mockPeer) RemoteFeatures() *lnwire.FeatureVector {
+	return nil
+}
 
 // mockMessageStore is an in-memory implementation of the MessageStore interface
 // used for the gossiper's unit tests.

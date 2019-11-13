@@ -9,6 +9,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -150,7 +151,7 @@ type channelCloser struct {
 // passed configuration, and delivery+fee preference. The final argument should
 // only be populated iff, we're the initiator of this closing request.
 func newChannelCloser(cfg chanCloseCfg, deliveryScript []byte,
-	idealFeePerKw lnwallet.SatPerKWeight, negotiationHeight uint32,
+	idealFeePerKw chainfee.SatPerKWeight, negotiationHeight uint32,
 	closeReq *htlcswitch.ChanClose) *channelCloser {
 
 	// Given the target fee-per-kw, we'll compute what our ideal _total_
@@ -435,6 +436,14 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 				"close: %v", c.chanPoint, err)
 		}
 
+		// Before publishing the closing tx, we persist it to the
+		// database, such that it can be republished if something goes
+		// wrong.
+		err = c.cfg.channel.MarkCommitmentBroadcasted(closeTx)
+		if err != nil {
+			return nil, false, err
+		}
+
 		// With the closing transaction crafted, we'll now broadcast it
 		// to the network.
 		peerLog.Infof("Broadcasting cooperative close tx: %v",
@@ -442,9 +451,6 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 				return spew.Sdump(closeTx)
 			}))
 		if err := c.cfg.broadcastTx(closeTx); err != nil {
-			return nil, false, err
-		}
-		if err := c.cfg.channel.MarkCommitmentBroadcasted(); err != nil {
 			return nil, false, err
 		}
 

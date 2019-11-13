@@ -2,8 +2,15 @@ package lnwire
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+)
+
+var (
+	// ErrFeaturePairExists signals an error in feature vector construction
+	// where the opposing bit in a feature pair has already been set.
+	ErrFeaturePairExists = errors.New("feature pair exists")
 )
 
 // FeatureBit represents a feature that can be enabled in either a local or
@@ -55,6 +62,16 @@ const (
 	// packet.
 	TLVOnionPayloadOptional FeatureBit = 9
 
+	// StaticRemoteKeyRequired is a required feature bit that signals that
+	// within one's commitment transaction, the key used for the remote
+	// party's non-delay output should not be tweaked.
+	StaticRemoteKeyRequired FeatureBit = 12
+
+	// StaticRemoteKeyOptional is an optional feature bit that signals that
+	// within one's commitment transaction, the key used for the remote
+	// party's non-delay output should not be tweaked.
+	StaticRemoteKeyOptional FeatureBit = 13
+
 	// maxAllowedSize is a maximum allowed size of feature vector.
 	//
 	// NOTE: Within the protocol, the maximum allowed message size is 65535
@@ -68,26 +85,19 @@ const (
 	maxAllowedSize = 32764
 )
 
-// LocalFeatures is a mapping of known connection-local feature bits to a
-// descriptive name. All known local feature bits must be assigned a name in
-// this mapping. Local features are those which are only sent to the peer and
-// not advertised to the entire network. A full description of these feature
-// bits is provided in the BOLT-09 specification.
-var LocalFeatures = map[FeatureBit]string{
+// Features is a mapping of known feature bits to a descriptive name. All known
+// feature bits must be assigned a name in this mapping, and feature bit pairs
+// must be assigned together for correct behavior.
+var Features = map[FeatureBit]string{
 	DataLossProtectRequired: "data-loss-protect",
 	DataLossProtectOptional: "data-loss-protect",
 	InitialRoutingSync:      "initial-routing-sync",
 	GossipQueriesRequired:   "gossip-queries",
 	GossipQueriesOptional:   "gossip-queries",
-}
-
-// GlobalFeatures is a mapping of known global feature bits to a descriptive
-// name. All known global feature bits must be assigned a name in this mapping.
-// Global features are those which are advertised to the entire network. A full
-// description of these feature bits is provided in the BOLT-09 specification.
-var GlobalFeatures = map[FeatureBit]string{
 	TLVOnionPayloadRequired: "tlv-onion",
 	TLVOnionPayloadOptional: "tlv-onion",
+	StaticRemoteKeyOptional: "static-remote-key",
+	StaticRemoteKeyRequired: "static-remote-key",
 }
 
 // RawFeatureVector represents a set of feature bits as defined in BOLT-09.  A
@@ -109,6 +119,26 @@ func NewRawFeatureVector(bits ...FeatureBit) *RawFeatureVector {
 	return fv
 }
 
+// Merges sets all feature bits in other on the receiver's feature vector.
+func (fv *RawFeatureVector) Merge(other *RawFeatureVector) error {
+	for bit := range other.features {
+		err := fv.SafeSet(bit)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Clone makes a copy of a feature vector.
+func (fv *RawFeatureVector) Clone() *RawFeatureVector {
+	newFeatures := NewRawFeatureVector()
+	for bit := range fv.features {
+		newFeatures.Set(bit)
+	}
+	return newFeatures
+}
+
 // IsSet returns whether a particular feature bit is enabled in the vector.
 func (fv *RawFeatureVector) IsSet(feature FeatureBit) bool {
 	return fv.features[feature]
@@ -117,6 +147,20 @@ func (fv *RawFeatureVector) IsSet(feature FeatureBit) bool {
 // Set marks a feature as enabled in the vector.
 func (fv *RawFeatureVector) Set(feature FeatureBit) {
 	fv.features[feature] = true
+}
+
+// SafeSet sets the chosen feature bit in the feature vector, but returns an
+// error if the opposing feature bit is already set. This ensures both that we
+// are creating properly structured feature vectors, and in some cases, that
+// peers are sending properly encoded ones, i.e. it can't be both optional and
+// required.
+func (fv *RawFeatureVector) SafeSet(feature FeatureBit) error {
+	if _, ok := fv.features[feature^1]; ok {
+		return ErrFeaturePairExists
+	}
+
+	fv.Set(feature)
+	return nil
 }
 
 // Unset marks a feature as disabled in the vector.

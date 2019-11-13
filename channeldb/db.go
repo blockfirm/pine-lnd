@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/coreos/bbolt"
 	"github.com/go-errors/errors"
+	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -38,16 +39,82 @@ var (
 	// current db.
 	dbVersions = []version{
 		{
+			// The base DB version requires no migration.
+			number:    0,
+			migration: nil,
+		},
+		{
+			// The version of the database where two new indexes
+			// for the update time of node and channel updates were
+			// added.
+			number:    1,
+			migration: migration_01_to_11.MigrateNodeAndEdgeUpdateIndex,
+		},
+		{
+			// The DB version that added the invoice event time
+			// series.
+			number:    2,
+			migration: migration_01_to_11.MigrateInvoiceTimeSeries,
+		},
+		{
+			// The DB version that updated the embedded invoice in
+			// outgoing payments to match the new format.
+			number:    3,
+			migration: migration_01_to_11.MigrateInvoiceTimeSeriesOutgoingPayments,
+		},
+		{
+			// The version of the database where every channel
+			// always has two entries in the edges bucket. If
+			// a policy is unknown, this will be represented
+			// by a special byte sequence.
+			number:    4,
+			migration: migration_01_to_11.MigrateEdgePolicies,
+		},
+		{
+			// The DB version where we persist each attempt to send
+			// an HTLC to a payment hash, and track whether the
+			// payment is in-flight, succeeded, or failed.
+			number:    5,
+			migration: migration_01_to_11.PaymentStatusesMigration,
+		},
+		{
+			// The DB version that properly prunes stale entries
+			// from the edge update index.
+			number:    6,
+			migration: migration_01_to_11.MigratePruneEdgeUpdateIndex,
+		},
+		{
+			// The DB version that migrates the ChannelCloseSummary
+			// to a format where optional fields are indicated with
+			// boolean flags.
+			number:    7,
+			migration: migration_01_to_11.MigrateOptionalChannelCloseSummaryFields,
+		},
+		{
+			// The DB version that changes the gossiper's message
+			// store keys to account for the message's type and
+			// ShortChannelID.
+			number:    8,
+			migration: migration_01_to_11.MigrateGossipMessageStoreKeys,
+		},
+		{
+			// The DB version where the payments and payment
+			// statuses are moved to being stored in a combined
+			// bucket.
+			number:    9,
+			migration: migration_01_to_11.MigrateOutgoingPayments,
+		},
+		{
 			// The DB version where we started to store legacy
 			// payload information for all routes, as well as the
 			// optional TLV records.
 			number:    10,
-			migration: migrateRouteSerialization,
+			migration: migration_01_to_11.MigrateRouteSerialization,
 		},
 		{
 			// Add invoice htlc and cltv delta fields.
 			number:    11,
-			migration: migrateInvoices,
+			migration: migration_01_to_11.MigrateInvoices,
 		},
 	}
 
@@ -85,7 +152,7 @@ func Open(dbPath string, modifiers ...OptionModifier) (*DB, error) {
 	// Specify bbolt freelist options to reduce heap pressure in case the
 	// freelist grows to be very large.
 	options := &bbolt.Options{
-		NoFreelistSync: true,
+		NoFreelistSync: opts.NoFreelistSync,
 		FreelistType:   bbolt.FreelistMapType,
 	}
 
@@ -1041,10 +1108,8 @@ func (d *DB) syncVersions(versions []version) error {
 	}
 
 	latestVersion := getLatestDBVersion(versions)
-	minUpgradeVersion := getMinUpgradeVersion(versions)
 	log.Infof("Checking for schema update: latest_version=%v, "+
-		"min_upgrade_version=%v, db_version=%v", latestVersion,
-		minUpgradeVersion, meta.DbVersionNumber)
+		"db_version=%v", latestVersion, meta.DbVersionNumber)
 
 	switch {
 
@@ -1056,12 +1121,6 @@ func (d *DB) syncVersions(versions []version) error {
 			"lower version=%d", meta.DbVersionNumber,
 			latestVersion)
 		return ErrDBReversion
-
-	case meta.DbVersionNumber < minUpgradeVersion:
-		log.Errorf("Refusing to upgrade from db_version=%d to "+
-			"latest_version=%d. Upgrade via intermediate major "+
-			"release(s).", meta.DbVersionNumber, latestVersion)
-		return ErrDBVersionTooLow
 
 	// If the current database version matches the latest version number,
 	// then we don't need to perform any migrations.
@@ -1104,21 +1163,6 @@ func (d *DB) ChannelGraph() *ChannelGraph {
 
 func getLatestDBVersion(versions []version) uint32 {
 	return versions[len(versions)-1].number
-}
-
-// getMinUpgradeVersion returns the minimum version required to upgrade the
-// database.
-func getMinUpgradeVersion(versions []version) uint32 {
-	firstMigrationVersion := versions[0].number
-
-	// If we can upgrade from the base version with this version of lnd,
-	// return the base version as the minimum required version.
-	if firstMigrationVersion == 0 {
-		return 0
-	}
-
-	// Otherwise require the version that the first migration upgrades from.
-	return firstMigrationVersion - 1
 }
 
 // getMigrationsToApply retrieves the migration function that should be

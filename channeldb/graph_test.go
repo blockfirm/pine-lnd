@@ -36,7 +36,7 @@ var (
 	_, _ = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
 	_, _ = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
 
-	testFeatures = lnwire.NewFeatureVector(nil, lnwire.GlobalFeatures)
+	testFeatures = lnwire.NewFeatureVector(nil, lnwire.Features)
 )
 
 func createLightningNode(db *DB, priv *btcec.PrivateKey) (*LightningNode, error) {
@@ -3171,5 +3171,27 @@ func TestLightningNodeSigVerification(t *testing.T) {
 
 	if !sign.Verify(data[:], nodePub) {
 		t.Fatalf("unable to verify sig")
+	}
+}
+
+// TestComputeFee tests fee calculation based on both in- and outgoing amt.
+func TestComputeFee(t *testing.T) {
+	var (
+		policy = ChannelEdgePolicy{
+			FeeBaseMSat:               10000,
+			FeeProportionalMillionths: 30000,
+		}
+		outgoingAmt = lnwire.MilliSatoshi(1000000)
+		expectedFee = lnwire.MilliSatoshi(40000)
+	)
+
+	fee := policy.ComputeFee(outgoingAmt)
+	if fee != expectedFee {
+		t.Fatalf("expected fee %v, got %v", expectedFee, fee)
+	}
+
+	fwdFee := policy.ComputeFeeFromIncoming(outgoingAmt + fee)
+	if fwdFee != expectedFee {
+		t.Fatalf("expected fee %v, but got %v", fee, fwdFee)
 	}
 }
