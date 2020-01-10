@@ -29,12 +29,6 @@ const (
 	RequiredViolation
 )
 
-const (
-	// customTypeStart is the start of the custom tlv type range as defined
-	// in BOLT 01.
-	customTypeStart = 65536
-)
-
 // String returns a human-readable description of the violation as a verb.
 func (v PayloadViolation) String() string {
 	switch v {
@@ -91,6 +85,10 @@ type Payload struct {
 	// MPP holds the info provided in an option_mpp record when parsed from
 	// a TLV onion payload.
 	MPP *record.MPP
+
+	// customRecords are user-defined records in the custom type range that
+	// were included in the payload.
+	customRecords record.CustomSet
 }
 
 // NewLegacyPayload builds a Payload from the amount, cltv, and next hop
@@ -105,6 +103,7 @@ func NewLegacyPayload(f *sphinx.HopData) *Payload {
 			AmountToForward: lnwire.MilliSatoshi(f.ForwardAmount),
 			OutgoingCTLV:    f.OutgoingCltv,
 		},
+		customRecords: make(record.CustomSet),
 	}
 }
 
@@ -157,6 +156,9 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 		mpp = nil
 	}
 
+	// Filter out the custom records.
+	customRecords := NewCustomRecords(parsedTypes)
+
 	return &Payload{
 		FwdInfo: ForwardingInfo{
 			Network:         BitcoinNetwork,
@@ -164,7 +166,8 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 			AmountToForward: lnwire.MilliSatoshi(amt),
 			OutgoingCTLV:    cltv,
 		},
-		MPP: mpp,
+		MPP:           mpp,
+		customRecords: customRecords,
 	}, nil
 }
 
@@ -174,11 +177,24 @@ func (h *Payload) ForwardingInfo() ForwardingInfo {
 	return h.FwdInfo
 }
 
+// NewCustomRecords filters the types parsed from the tlv stream for custom
+// records.
+func NewCustomRecords(parsedTypes tlv.TypeMap) record.CustomSet {
+	customRecords := make(record.CustomSet)
+	for t, parseResult := range parsedTypes {
+		if parseResult == nil || t < record.CustomTypeStart {
+			continue
+		}
+		customRecords[uint64(t)] = parseResult
+	}
+	return customRecords
+}
+
 // ValidateParsedPayloadTypes checks the types parsed from a hop payload to
 // ensure that the proper fields are either included or omitted. The finalHop
 // boolean should be true if the payload was parsed for an exit hop. The
 // requirements for this method are described in BOLT 04.
-func ValidateParsedPayloadTypes(parsedTypes tlv.TypeSet,
+func ValidateParsedPayloadTypes(parsedTypes tlv.TypeMap,
 	nextHop lnwire.ShortChannelID) error {
 
 	isFinalHop := nextHop == Exit
@@ -234,22 +250,30 @@ func (h *Payload) MultiPath() *record.MPP {
 	return h.MPP
 }
 
+// CustomRecords returns the custom tlv type records that were parsed from the
+// payload.
+func (h *Payload) CustomRecords() record.CustomSet {
+	return h.customRecords
+}
+
 // getMinRequiredViolation checks for unrecognized required (even) fields in the
 // standard range and returns the lowest required type. Always returning the
 // lowest required type allows a failure message to be deterministic.
-func getMinRequiredViolation(set tlv.TypeSet) *tlv.Type {
+func getMinRequiredViolation(set tlv.TypeMap) *tlv.Type {
 	var (
 		requiredViolation        bool
 		minRequiredViolationType tlv.Type
 	)
-	for t, known := range set {
+	for t, parseResult := range set {
 		// If a type is even but not known to us, we cannot process the
 		// payload. We are required to understand a field that we don't
 		// support.
 		//
 		// We always accept custom fields, because a higher level
 		// application may understand them.
-		if known || t%2 != 0 || t >= customTypeStart {
+		if parseResult == nil || t%2 != 0 ||
+			t >= record.CustomTypeStart {
+
 			continue
 		}
 

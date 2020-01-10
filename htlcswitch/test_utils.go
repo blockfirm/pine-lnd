@@ -262,7 +262,7 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 
 	aliceCommitTx, bobCommitTx, err := lnwallet.CreateCommitmentTxns(
 		aliceAmount, bobAmount, &aliceCfg, &bobCfg, aliceCommitPoint,
-		bobCommitPoint, *fundingTxIn, true,
+		bobCommitPoint, *fundingTxIn, channeldb.SingleFunderTweaklessBit,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -560,10 +560,13 @@ func generatePaymentWithPreimage(invoiceAmt, htlcAmt lnwire.MilliSatoshi,
 	invoice := &channeldb.Invoice{
 		CreationDate: time.Now(),
 		Terms: channeldb.ContractTerm{
+			FinalCltvDelta:  testInvoiceCltvExpiry,
 			Value:           invoiceAmt,
 			PaymentPreimage: preimage,
+			Features: lnwire.NewFeatureVector(
+				nil, lnwire.Features,
+			),
 		},
-		FinalCltvDelta: testInvoiceCltvExpiry,
 	}
 
 	htlc := &lnwire.UpdateAddHTLC{
@@ -1075,7 +1078,7 @@ func newHopNetwork() *hopNetwork {
 	defaultDelta := uint32(6)
 
 	globalPolicy := ForwardingPolicy{
-		MinHTLC:       lnwire.NewMSatFromSatoshis(5),
+		MinHTLCOut:    lnwire.NewMSatFromSatoshis(5),
 		BaseFee:       lnwire.NewMSatFromSatoshis(1),
 		TimeLockDelta: defaultDelta,
 	}

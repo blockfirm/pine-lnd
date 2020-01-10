@@ -12,9 +12,10 @@ import (
 // Type is an 64-bit identifier for a TLV Record.
 type Type uint64
 
-// TypeSet is an unordered set of Types. The map item boolean values indicate
-// whether the type that we parsed was known.
-type TypeSet map[Type]bool
+// TypeMap is a map of parsed Types. The map values are byte slices. If the byte
+// slice is nil, the type was successfully parsed. Otherwise the value is byte
+// slice containing the encoded data.
+type TypeMap map[Type][]byte
 
 // Encoder is a signature for methods that can encode TLV values. An error
 // should be returned if the Encoder cannot support the underlying type of val.
@@ -219,7 +220,7 @@ func StubEncoder(v []byte) Encoder {
 // MapToRecords encodes the passed TLV map as a series of regular tlv.Record
 // instances. The resulting set of records will be returned in sorted order by
 // their type.
-func MapToRecords(tlvMap map[uint64][]byte) ([]Record, error) {
+func MapToRecords(tlvMap map[uint64][]byte) []Record {
 	records := make([]Record, 0, len(tlvMap))
 	for k, v := range tlvMap {
 		// We don't pass in a decoder here since we don't actually know
@@ -234,7 +235,7 @@ func MapToRecords(tlvMap map[uint64][]byte) ([]Record, error) {
 
 	SortRecords(records)
 
-	return records, nil
+	return records
 }
 
 // SortRecords is a helper function that will sort a slice of records in place

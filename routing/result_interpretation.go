@@ -11,15 +11,15 @@ import (
 // Instantiate variables to allow taking a reference from the failure reason.
 var (
 	reasonError            = channeldb.FailureReasonError
-	reasonIncorrectDetails = channeldb.FailureReasonIncorrectPaymentDetails
+	reasonIncorrectDetails = channeldb.FailureReasonPaymentDetails
 )
 
 // pairResult contains the result of the interpretation of a payment attempt for
 // a specific node pair.
 type pairResult struct {
-	// minPenalizeAmt is the minimum amount for which a penalty should be
-	// applied based on this result. Only applies to fail results.
-	minPenalizeAmt lnwire.MilliSatoshi
+	// amt is the amount that was forwarded for this pair. Can be set to
+	// zero for failures that are amount independent.
+	amt lnwire.MilliSatoshi
 
 	// success indicates whether the payment attempt was successful through
 	// this pair.
@@ -29,24 +29,28 @@ type pairResult struct {
 // failPairResult creates a new result struct for a failure.
 func failPairResult(minPenalizeAmt lnwire.MilliSatoshi) pairResult {
 	return pairResult{
-		minPenalizeAmt: minPenalizeAmt,
+		amt: minPenalizeAmt,
 	}
 }
 
-// successPairResult creates a new result struct for a success.
-func successPairResult() pairResult {
+// newSuccessPairResult creates a new result struct for a success.
+func successPairResult(successAmt lnwire.MilliSatoshi) pairResult {
 	return pairResult{
 		success: true,
+		amt:     successAmt,
 	}
 }
 
 // String returns the human-readable representation of a pair result.
 func (p pairResult) String() string {
+	var resultType string
 	if p.success {
-		return "success"
+		resultType = "success"
+	} else {
+		resultType = "failed"
 	}
 
-	return fmt.Sprintf("failed (minPenalizeAmt=%v)", p.minPenalizeAmt)
+	return fmt.Sprintf("%v (amt=%v)", resultType, p.amt)
 }
 
 // interpretedResult contains the result of the interpretation of a payment
@@ -187,10 +191,8 @@ func (i *interpretedResult) processPaymentOutcomeFinal(
 		i.failPair(route, n-1)
 
 		// The other hops relayed corectly, so assign those pairs a
-		// success result.
-		if n > 2 {
-			i.successPairRange(route, 0, n-2)
-		}
+		// success result. At this point, n >= 2.
+		i.successPairRange(route, 0, n-2)
 
 	// We are using wrong payment hash or amount, fail the payment.
 	case *lnwire.FailIncorrectPaymentAmount,
@@ -212,6 +214,22 @@ func (i *interpretedResult) processPaymentOutcomeFinal(
 		// deliberately. What to penalize?
 		i.finalFailureReason = &reasonIncorrectDetails
 
+	case *lnwire.FailMPPTimeout:
+		// TODO(carla): decide how to penalize mpp timeout. In the
+		// meantime, attribute success to the hops along the route and
+		// do not penalize the final node.
+
+		i.finalFailureReason = &reasonError
+
+		// If this is a direct payment, take no action.
+		if n == 1 {
+			return
+		}
+
+		// Assign all pairs a success result except the final hop, as
+		// the payment reached the destination correctly.
+		i.successPairRange(route, 0, n-2)
+
 	default:
 		// All other errors are considered terminal if coming from the
 		// final hop. They indicate that something is wrong at the
@@ -219,7 +237,7 @@ func (i *interpretedResult) processPaymentOutcomeFinal(
 		i.failNode(route, n)
 
 		// Other channels in the route forwarded correctly.
-		if n > 2 {
+		if n >= 2 {
 			i.successPairRange(route, 0, n-2)
 		}
 
@@ -458,9 +476,9 @@ func (i *interpretedResult) successPairRange(
 	rt *route.Route, fromIdx, toIdx int) {
 
 	for idx := fromIdx; idx <= toIdx; idx++ {
-		pair, _ := getPair(rt, idx)
+		pair, amt := getPair(rt, idx)
 
-		i.pairResults[pair] = successPairResult()
+		i.pairResults[pair] = successPairResult(amt)
 	}
 }
 

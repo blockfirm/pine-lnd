@@ -415,6 +415,9 @@ func marshallError(sendError error) (*Failure, error) {
 	case *lnwire.FailPermanentChannelFailure:
 		response.Code = Failure_PERMANENT_CHANNEL_FAILURE
 
+	case *lnwire.FailMPPTimeout:
+		response.Code = Failure_MPP_TIMEOUT
+
 	case nil:
 		response.Code = Failure_UNKNOWN_FAILURE
 
@@ -494,14 +497,18 @@ func (s *Server) QueryMissionControl(ctx context.Context,
 // toRPCPairData marshalls mission control pair data to the rpc struct.
 func toRPCPairData(data *routing.TimedPairResult) *PairData {
 	rpcData := PairData{
-		MinPenalizeAmtSat: int64(
-			data.MinPenalizeAmt.ToSatoshis(),
-		),
-		LastAttemptSuccessful: data.Success,
+		FailAmtSat:     int64(data.FailAmt.ToSatoshis()),
+		FailAmtMsat:    int64(data.FailAmt),
+		SuccessAmtSat:  int64(data.SuccessAmt.ToSatoshis()),
+		SuccessAmtMsat: int64(data.SuccessAmt),
 	}
 
-	if !data.Timestamp.IsZero() {
-		rpcData.Timestamp = data.Timestamp.Unix()
+	if !data.FailTime.IsZero() {
+		rpcData.FailTime = data.FailTime.Unix()
+	}
+
+	if !data.SuccessTime.IsZero() {
+		rpcData.SuccessTime = data.SuccessTime.Unix()
 	}
 
 	return &rpcData
@@ -584,19 +591,12 @@ func (s *Server) trackPayment(paymentHash lntypes.Hash,
 	case result := <-resultChan:
 		// Marshall result to rpc type.
 		var status PaymentStatus
-
 		if result.Success {
 			log.Debugf("Payment %v successfully completed",
 				paymentHash)
 
 			status.State = PaymentState_SUCCEEDED
 			status.Preimage = result.Preimage[:]
-			status.Route, err = router.MarshallRoute(
-				result.Route,
-			)
-			if err != nil {
-				return err
-			}
 		} else {
 			state, err := marshallFailureReason(
 				result.FailureReason,
@@ -605,15 +605,49 @@ func (s *Server) trackPayment(paymentHash lntypes.Hash,
 				return err
 			}
 			status.State = state
-			if result.Route != nil {
-				status.Route, err = router.MarshallRoute(
-					result.Route,
-				)
-				if err != nil {
-					return err
-				}
+		}
+
+		// Extract the last route from the given list of HTLCs. This
+		// will populate the legacy route field for backwards
+		// compatibility.
+		//
+		// NOTE: For now there will be at most one HTLC, this code
+		// should be revisted or the field removed when multiple HTLCs
+		// are permitted.
+		var legacyRoute *route.Route
+		for _, htlc := range result.HTLCs {
+			switch {
+			case htlc.Settle != nil:
+				legacyRoute = &htlc.Route
+
+			// Only display the route for failed payments if we got
+			// an incorrect payment details error, so that it can be
+			// used for probing or fee estimation.
+			case htlc.Failure != nil && result.FailureReason ==
+				channeldb.FailureReasonPaymentDetails:
+
+				legacyRoute = &htlc.Route
 			}
 		}
+		if legacyRoute != nil {
+			status.Route, err = router.MarshallRoute(legacyRoute)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Marshal our list of HTLCs that have been tried for this
+		// payment.
+		htlcs := make([]*lnrpc.HTLCAttempt, 0, len(result.HTLCs))
+		for _, dbHtlc := range result.HTLCs {
+			htlc, err := router.MarshalHTLCAttempt(dbHtlc)
+			if err != nil {
+				return err
+			}
+
+			htlcs = append(htlcs, htlc)
+		}
+		status.Htlcs = htlcs
 
 		// Send event to the client.
 		err = stream.Send(&status)
@@ -645,8 +679,11 @@ func marshallFailureReason(reason channeldb.FailureReason) (
 	case channeldb.FailureReasonError:
 		return PaymentState_FAILED_ERROR, nil
 
-	case channeldb.FailureReasonIncorrectPaymentDetails:
+	case channeldb.FailureReasonPaymentDetails:
 		return PaymentState_FAILED_INCORRECT_PAYMENT_DETAILS, nil
+
+	case channeldb.FailureReasonInsufficientBalance:
+		return PaymentState_FAILED_INSUFFICIENT_BALANCE, nil
 	}
 
 	return 0, errors.New("unknown failure reason")

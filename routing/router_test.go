@@ -1319,7 +1319,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 		t.Fatalf("unable to find any routes: %v", err)
 	}
 
-	copy1, err := ctx.graph.FetchLightningNode(priv1.PubKey())
+	copy1, err := ctx.graph.FetchLightningNode(nil, pub1)
 	if err != nil {
 		t.Fatalf("unable to fetch node: %v", err)
 	}
@@ -1328,7 +1328,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 		t.Fatalf("fetched node not equal to original")
 	}
 
-	copy2, err := ctx.graph.FetchLightningNode(priv2.PubKey())
+	copy2, err := ctx.graph.FetchLightningNode(nil, pub2)
 	if err != nil {
 		t.Fatalf("unable to fetch node: %v", err)
 	}
@@ -2174,7 +2174,7 @@ func TestFindPathFeeWeighting(t *testing.T) {
 		},
 		noRestrictions,
 		testPathFindingConfig,
-		sourceNode.PubKeyBytes, target, amt,
+		sourceNode.PubKeyBytes, target, amt, 0,
 	)
 	if err != nil {
 		t.Fatalf("unable to find path: %v", err)
@@ -3336,6 +3336,74 @@ func TestSendToRouteStructuredError(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("initPayment not called")
+	}
+}
+
+// TestSendToRouteMaxHops asserts that SendToRoute fails when using a route that
+// exceeds the maximum number of hops.
+func TestSendToRouteMaxHops(t *testing.T) {
+	t.Parallel()
+
+	// Setup a two node network.
+	chanCapSat := btcutil.Amount(100000)
+	testChannels := []*testChannel{
+		symmetricTestChannel("a", "b", chanCapSat, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 400,
+			MinHTLC: 1,
+			MaxHTLC: lnwire.NewMSatFromSatoshis(chanCapSat),
+		}, 1),
+	}
+
+	testGraph, err := createTestGraphFromChannels(testChannels, "a")
+	if err != nil {
+		t.Fatalf("unable to create graph: %v", err)
+	}
+	defer testGraph.cleanUp()
+
+	const startingBlockHeight = 101
+
+	ctx, cleanUp, err := createTestCtxFromGraphInstance(
+		startingBlockHeight, testGraph,
+	)
+	if err != nil {
+		t.Fatalf("unable to create router: %v", err)
+	}
+	defer cleanUp()
+
+	// Create a 30 hop route that exceeds the maximum hop limit.
+	const payAmt = lnwire.MilliSatoshi(10000)
+	hopA := ctx.aliases["a"]
+	hopB := ctx.aliases["b"]
+
+	var hops []*route.Hop
+	for i := 0; i < 15; i++ {
+		hops = append(hops, &route.Hop{
+			ChannelID:     1,
+			PubKeyBytes:   hopB,
+			AmtToForward:  payAmt,
+			LegacyPayload: true,
+		})
+
+		hops = append(hops, &route.Hop{
+			ChannelID:     1,
+			PubKeyBytes:   hopA,
+			AmtToForward:  payAmt,
+			LegacyPayload: true,
+		})
+	}
+
+	rt, err := route.NewRouteFromHops(payAmt, 100, ctx.aliases["a"], hops)
+	if err != nil {
+		t.Fatalf("unable to create route: %v", err)
+	}
+
+	// Send off the payment request to the router. We expect an error back
+	// indicating that the route is too long.
+	var payment lntypes.Hash
+	_, err = ctx.router.SendToRoute(payment, rt)
+	if err != route.ErrMaxRouteHopsExceeded {
+		t.Fatalf("expected ErrMaxRouteHopsExceeded, but got %v", err)
 	}
 }
 

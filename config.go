@@ -166,7 +166,8 @@ type chainConfig struct {
 
 	DefaultNumChanConfs int                 `long:"defaultchanconfs" description:"The default number of confirmations a channel must have before it's considered open. If this is not set, we will scale the value according to the channel size."`
 	DefaultRemoteDelay  int                 `long:"defaultremotedelay" description:"The default number of blocks we will require our channel counterparty to wait before accessing its funds in case of unilateral close. If this is not set, we will scale the value according to the channel size."`
-	MinHTLC             lnwire.MilliSatoshi `long:"minhtlc" description:"The smallest HTLC we are willing to forward on our channels, in millisatoshi"`
+	MinHTLCIn           lnwire.MilliSatoshi `long:"minhtlc" description:"The smallest HTLC we are willing to accept on our channels, in millisatoshi"`
+	MinHTLCOut          lnwire.MilliSatoshi `long:"minhtlcout" description:"The smallest HTLC we are willing to send out on our channels, in millisatoshi"`
 	BaseFee             lnwire.MilliSatoshi `long:"basefee" description:"The base fee in millisatoshi we will charge for forwarding payments on our channels"`
 	FeeRate             lnwire.MilliSatoshi `long:"feerate" description:"The fee rate used when forwarding payments on our channels. The total fee charged is basefee + (amount * feerate / 1000000), where amount is the forwarded amount."`
 	TimeLockDelta       uint32              `long:"timelockdelta" description:"The CLTV delta we will subtract from a forwarded HTLC's timelock value"`
@@ -276,7 +277,7 @@ type config struct {
 
 	Profile string `long:"profile" description:"Enable HTTP profiling on given port -- NOTE port must be between 1024 and 65535"`
 
-	UnsafeDisconnect   bool   `long:"unsafe-disconnect" description:"Allows the rpcserver to intentionally disconnect from peers with open channels. USED FOR TESTING ONLY."`
+	UnsafeDisconnect   bool   `long:"unsafe-disconnect" description:"DEPRECATED: Allows the rpcserver to intentionally disconnect from peers with open channels. THIS FLAG WILL BE REMOVED IN 0.10.0"`
 	UnsafeReplay       bool   `long:"unsafe-replay" description:"Causes a link to replay the adds on its commitment txn after starting up, this enables testing of the sphinx replay logic."`
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
 	BackupFilePath     string `long:"backupfilepath" description:"The target location of the channel backup file"`
@@ -328,6 +329,10 @@ type config struct {
 
 	net tor.Net
 
+	EnableUpfrontShutdown bool `long:"enable-upfront-shutdown" description:"If true, option upfront shutdown script will be enabled. If peers that we open channels with support this feature, we will automatically set the script to which cooperative closes should be paid out to on channel open. This offers the partial protection of a channel peer disconnecting from us if cooperative close is attempted with a different script."`
+
+	AcceptKeySend bool `long:"accept-key-send" description:"If true, spontaneous payments through key send will be accepted. [experimental]"`
+
 	Routing *routing.Conf `group:"routing" namespace:"routing"`
 
 	Workers *lncfg.Workers `group:"workers" namespace:"workers"`
@@ -365,7 +370,8 @@ func loadConfig() (*config, error) {
 		MaxLogFiles:    defaultMaxLogFiles,
 		MaxLogFileSize: defaultMaxLogFileSize,
 		Bitcoin: &chainConfig{
-			MinHTLC:       defaultBitcoinMinHTLCMSat,
+			MinHTLCIn:     defaultBitcoinMinHTLCInMSat,
+			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
 			BaseFee:       DefaultBitcoinBaseFeeMSat,
 			FeeRate:       DefaultBitcoinFeeRate,
 			TimeLockDelta: DefaultBitcoinTimeLockDelta,
@@ -381,7 +387,8 @@ func loadConfig() (*config, error) {
 			RPCHost: defaultRPCHost,
 		},
 		Litecoin: &chainConfig{
-			MinHTLC:       defaultLitecoinMinHTLCMSat,
+			MinHTLCIn:     defaultLitecoinMinHTLCInMSat,
+			MinHTLCOut:    defaultLitecoinMinHTLCOutMSat,
 			BaseFee:       defaultLitecoinBaseFeeMSat,
 			FeeRate:       defaultLitecoinFeeRate,
 			TimeLockDelta: defaultLitecoinTimeLockDelta,
@@ -396,6 +403,7 @@ func loadConfig() (*config, error) {
 			Dir:     defaultLitecoindDir,
 			RPCHost: defaultRPCHost,
 		},
+		UnsafeDisconnect:   true,
 		MaxPendingChannels: DefaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,
 		MinBackoff:         defaultMinBackoff,

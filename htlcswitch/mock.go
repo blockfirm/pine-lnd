@@ -22,6 +22,7 @@ import (
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/input"
@@ -790,9 +791,13 @@ func newMockRegistry(minDelta uint32) *mockInvoiceRegistry {
 		panic(err)
 	}
 
-	finalCltvRejectDelta := int32(5)
-
-	registry := invoices.NewRegistry(cdb, finalCltvRejectDelta)
+	registry := invoices.NewRegistry(
+		cdb,
+		invoices.NewInvoiceExpiryWatcher(clock.NewDefaultClock()),
+		&invoices.RegistryConfig{
+			FinalCltvRejectDelta: 5,
+		},
+	)
 	registry.Start()
 
 	return &mockInvoiceRegistry{
@@ -814,7 +819,7 @@ func (i *mockInvoiceRegistry) SettleHodlInvoice(preimage lntypes.Preimage) error
 func (i *mockInvoiceRegistry) NotifyExitHopHtlc(rhash lntypes.Hash,
 	amt lnwire.MilliSatoshi, expiry uint32, currentHeight int32,
 	circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
-	payload invoices.Payload) (*invoices.HodlEvent, error) {
+	payload invoices.Payload) (*invoices.HtlcResolution, error) {
 
 	event, err := i.registry.NotifyExitHopHtlc(
 		rhash, amt, expiry, currentHeight, circuitKey, hodlChan,

@@ -90,10 +90,16 @@ var (
 	}
 )
 
+// noUpdate is a function which can be used as a parameter in createTestPeer to
+// call the setup code with no custom values on the channels set up.
+var noUpdate = func(a, b *channeldb.OpenChannel) {}
+
 // createTestPeer creates a channel between two nodes, and returns a peer for
-// one of the nodes, together with the channel seen from both nodes.
-func createTestPeer(notifier chainntnfs.ChainNotifier,
-	publTx chan *wire.MsgTx) (*peer, *lnwallet.LightningChannel,
+// one of the nodes, together with the channel seen from both nodes. It takes
+// an updateChan function which can be used to modify the default values on
+// the channel states for each peer.
+func createTestPeer(notifier chainntnfs.ChainNotifier, publTx chan *wire.MsgTx,
+	updateChan func(a, b *channeldb.OpenChannel)) (*peer, *lnwallet.LightningChannel,
 	*lnwallet.LightningChannel, func(), error) {
 
 	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(btcec.S256(),
@@ -189,7 +195,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 
 	aliceCommitTx, bobCommitTx, err := lnwallet.CreateCommitmentTxns(
 		channelBal, channelBal, &aliceCfg, &bobCfg, aliceCommitPoint,
-		bobCommitPoint, *fundingTxIn, true,
+		bobCommitPoint, *fundingTxIn, channeldb.SingleFunderTweaklessBit,
 	)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -284,6 +290,9 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		Db:                      dbBob,
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 	}
+
+	// Set custom values on the channel states.
+	updateChan(aliceChannelState, bobChannelState)
 
 	aliceAddr := &net.TCPAddr{
 		IP:   net.ParseIP("127.0.0.1"),

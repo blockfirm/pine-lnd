@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/contractcourt"
+	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -463,6 +464,8 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) (
 			fallthrough
 		case dbChan.HasChanStatus(channeldb.ChanStatusCommitBroadcasted):
 			fallthrough
+		case dbChan.HasChanStatus(channeldb.ChanStatusCoopBroadcasted):
+			fallthrough
 		case dbChan.HasChanStatus(channeldb.ChanStatusLocalDataLoss):
 			peerLog.Warnf("ChannelPoint(%v) has status %v, won't "+
 				"start.", chanPoint, dbChan.ChanStatus())
@@ -529,7 +532,7 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) (
 		var forwardingPolicy *htlcswitch.ForwardingPolicy
 		if selfPolicy != nil {
 			forwardingPolicy = &htlcswitch.ForwardingPolicy{
-				MinHTLC:       selfPolicy.MinHTLC,
+				MinHTLCOut:    selfPolicy.MinHTLC,
 				MaxHTLC:       selfPolicy.MaxHTLC,
 				BaseFee:       selfPolicy.FeeBaseMSat,
 				FeeRate:       selfPolicy.FeeProportionalMillionths,
@@ -1333,8 +1336,10 @@ func messageSummary(msg lnwire.Message) string {
 			msg.Complete)
 
 	case *lnwire.ReplyChannelRange:
-		return fmt.Sprintf("complete=%v, encoding=%v, num_chans=%v",
-			msg.Complete, msg.EncodingType, len(msg.ShortChanIDs))
+		return fmt.Sprintf("start_height=%v, end_height=%v, "+
+			"num_chans=%v, encoding=%v", msg.FirstBlockHeight,
+			msg.LastBlockHeight(), len(msg.ShortChanIDs),
+			msg.EncodingType)
 
 	case *lnwire.QueryShortChanIDs:
 		return fmt.Sprintf("chain_hash=%v, encoding=%v, num_chans=%v",
@@ -1342,8 +1347,8 @@ func messageSummary(msg lnwire.Message) string {
 
 	case *lnwire.QueryChannelRange:
 		return fmt.Sprintf("chain_hash=%v, start_height=%v, "+
-			"num_blocks=%v", msg.ChainHash, msg.FirstBlockHeight,
-			msg.NumBlocks)
+			"end_height=%v", msg.ChainHash, msg.FirstBlockHeight,
+			msg.LastBlockHeight())
 
 	case *lnwire.GossipTimestampRange:
 		return fmt.Sprintf("chain_hash=%v, first_stamp=%v, "+
@@ -1860,7 +1865,7 @@ out:
 			fwdMinHtlc := lnChan.FwdMinHtlc()
 			defaultPolicy := p.server.cc.routingPolicy
 			forwardingPolicy := &htlcswitch.ForwardingPolicy{
-				MinHTLC:       fwdMinHtlc,
+				MinHTLCOut:    fwdMinHtlc,
 				MaxHTLC:       newChan.LocalChanCfg.MaxPendingAmount,
 				BaseFee:       defaultPolicy.BaseFee,
 				FeeRate:       defaultPolicy.FeeRate,
@@ -2068,13 +2073,18 @@ func (p *peer) fetchActiveChanCloser(chanID lnwire.ChannelID) (*channelCloser, e
 				"channel w/ active htlcs")
 		}
 
-		// We'll create a valid closing state machine in order to
-		// respond to the initiated cooperative channel closure.
-		deliveryAddr, err := p.genDeliveryScript()
-		if err != nil {
-			peerLog.Errorf("unable to gen delivery script: %v", err)
-
-			return nil, fmt.Errorf("close addr unavailable")
+		// We'll create a valid closing state machine in order to respond to the
+		// initiated cooperative channel closure. First, we set the delivery
+		// script that our funds will be paid out to. If an upfront shutdown script
+		// was set, we will use it. Otherwise, we get a fresh delivery script.
+		deliveryScript := channel.LocalUpfrontShutdownScript()
+		if len(deliveryScript) == 0 {
+			var err error
+			deliveryScript, err = p.genDeliveryScript()
+			if err != nil {
+				peerLog.Errorf("unable to gen delivery script: %v", err)
+				return nil, fmt.Errorf("close addr unavailable")
+			}
 		}
 
 		// In order to begin fee negotiations, we'll first compute our
@@ -2099,9 +2109,12 @@ func (p *peer) fetchActiveChanCloser(chanID lnwire.ChannelID) (*channelCloser, e
 				unregisterChannel: p.server.htlcSwitch.RemoveLink,
 				broadcastTx:       p.server.cc.wallet.PublishTransaction,
 				disableChannel:    p.server.chanStatusMgr.RequestDisable,
-				quit:              p.quit,
+				disconnect: func() error {
+					return p.server.DisconnectPeer(p.IdentityKey())
+				},
+				quit: p.quit,
 			},
-			deliveryAddr,
+			deliveryScript,
 			feePerKw,
 			uint32(startingHeight),
 			nil,
@@ -2110,6 +2123,37 @@ func (p *peer) fetchActiveChanCloser(chanID lnwire.ChannelID) (*channelCloser, e
 	}
 
 	return chanCloser, nil
+}
+
+// chooseDeliveryScript takes two optionally set shutdown scripts and returns
+// a suitable script to close out to. This may be nil if neither script is
+// set. If both scripts are set, this function will error if they do not match.
+func chooseDeliveryScript(upfront,
+	requested lnwire.DeliveryAddress) (lnwire.DeliveryAddress, error) {
+
+	// If no upfront upfront shutdown script was provided, return the user
+	// requested address (which may be nil).
+	if len(upfront) == 0 {
+		return requested, nil
+	}
+
+	// If an upfront shutdown script was provided, and the user did not request
+	// a custom shutdown script, return the upfront address.
+	if len(requested) == 0 {
+		return upfront, nil
+	}
+
+	// If both an upfront shutdown script and a custom close script were
+	// provided, error if the user provided shutdown script does not match
+	// the upfront shutdown script (because closing out to a different script
+	// would violate upfront shutdown).
+	if !bytes.Equal(upfront, requested) {
+		return nil, errUpfrontShutdownScriptMismatch
+	}
+
+	// The user requested script matches the upfront shutdown script, so we
+	// can return it without error.
+	return upfront, nil
 }
 
 // handleLocalCloseReq kicks-off the workflow to execute a cooperative or
@@ -2134,14 +2178,32 @@ func (p *peer) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 	// out this channel on-chain, so we execute the cooperative channel
 	// closure workflow.
 	case htlcswitch.CloseRegular:
-		// First, we'll fetch a fresh delivery address that we'll use
-		// to send the funds to in the case of a successful
-		// negotiation.
-		deliveryAddr, err := p.genDeliveryScript()
+		// First, we'll choose a delivery address that we'll use to send the
+		// funds to in the case of a successful negotiation.
+
+		// An upfront shutdown and user provided script are both optional,
+		// but must be equal if both set  (because we cannot serve a request
+		// to close out to a script which violates upfront shutdown). Get the
+		// appropriate address to close out to (which may be nil if neither
+		// are set) and error if they are both set and do not match.
+		deliveryScript, err := chooseDeliveryScript(
+			channel.LocalUpfrontShutdownScript(), req.DeliveryScript,
+		)
 		if err != nil {
-			peerLog.Errorf(err.Error())
+			peerLog.Errorf("cannot close channel %v: %v", req.ChanPoint, err)
 			req.Err <- err
 			return
+		}
+
+		// If neither an upfront address or a user set address was
+		// provided, generate a fresh script.
+		if len(deliveryScript) == 0 {
+			deliveryScript, err = p.genDeliveryScript()
+			if err != nil {
+				peerLog.Errorf(err.Error())
+				req.Err <- err
+				return
+			}
 		}
 
 		// Next, we'll create a new channel closer state machine to
@@ -2159,9 +2221,12 @@ func (p *peer) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 				unregisterChannel: p.server.htlcSwitch.RemoveLink,
 				broadcastTx:       p.server.cc.wallet.PublishTransaction,
 				disableChannel:    p.server.chanStatusMgr.RequestDisable,
-				quit:              p.quit,
+				disconnect: func() error {
+					return p.server.DisconnectPeer(p.IdentityKey())
+				},
+				quit: p.quit,
 			},
-			deliveryAddr,
+			deliveryScript,
 			req.TargetFeePerKw,
 			uint32(startingHeight),
 			req,
@@ -2395,7 +2460,7 @@ func (p *peer) handleInitMsg(msg *lnwire.Init) error {
 	// those presented in the local features fields.
 	err := msg.Features.Merge(msg.GlobalFeatures)
 	if err != nil {
-		return fmt.Errorf("unable to merge legacy global featues: %v",
+		return fmt.Errorf("unable to merge legacy global features: %v",
 			err)
 	}
 
@@ -2407,11 +2472,17 @@ func (p *peer) handleInitMsg(msg *lnwire.Init) error {
 
 	// Now that we have their features loaded, we'll ensure that they
 	// didn't set any required bits that we don't know of.
-	unknownFeatures := p.remoteFeatures.UnknownRequiredFeatures()
-	if len(unknownFeatures) > 0 {
-		err := fmt.Errorf("peer set unknown feature bits: %v",
-			unknownFeatures)
-		return err
+	err = feature.ValidateRequired(p.remoteFeatures)
+	if err != nil {
+		return fmt.Errorf("invalid remote features: %v", err)
+	}
+
+	// Ensure the remote party's feature vector contains all transistive
+	// dependencies. We know ours are are correct since they are validated
+	// during the feature manager's instantiation.
+	err = feature.ValidateDeps(p.remoteFeatures)
+	if err != nil {
+		return fmt.Errorf("invalid remote features: %v", err)
 	}
 
 	// Now that we know we understand their requirements, we'll check to

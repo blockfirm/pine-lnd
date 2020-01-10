@@ -3,7 +3,6 @@ package lnwire
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -42,6 +41,16 @@ const (
 	// connection is established.
 	InitialRoutingSync FeatureBit = 3
 
+	// UpfrontShutdownScriptRequired is a feature bit which indicates that a
+	// peer *requires* that the remote peer accept an upfront shutdown script to
+	// which payout is enforced on cooperative closes.
+	UpfrontShutdownScriptRequired FeatureBit = 4
+
+	// UpfrontShutdownScriptOptional is an optional feature bit which indicates
+	// that the peer will accept an upfront shutdown script to which payout is
+	// enforced on cooperative closes.
+	UpfrontShutdownScriptOptional FeatureBit = 5
+
 	// GossipQueriesRequired is a feature bit that indicates that the
 	// receiving peer MUST know of the set of features that allows nodes to
 	// more efficiently query the network view of peers on the network for
@@ -72,6 +81,26 @@ const (
 	// party's non-delay output should not be tweaked.
 	StaticRemoteKeyOptional FeatureBit = 13
 
+	// PaymentAddrRequired is a required feature bit that signals that a
+	// node requires payment addresses, which are used to mitigate probing
+	// attacks on the receiver of a payment.
+	PaymentAddrRequired FeatureBit = 14
+
+	// PaymentAddrOptional is an optional feature bit that signals that a
+	// node supports payment addresses, which are used to mitigate probing
+	// attacks on the receiver of a payment.
+	PaymentAddrOptional FeatureBit = 15
+
+	// MPPOptional is a required feature bit that signals that the receiver
+	// of a payment requires settlement of an invoice with more than one
+	// HTLC.
+	MPPRequired FeatureBit = 16
+
+	// MPPOptional is an optional feature bit that signals that the receiver
+	// of a payment supports settlement of an invoice with more than one
+	// HTLC.
+	MPPOptional FeatureBit = 17
+
 	// maxAllowedSize is a maximum allowed size of feature vector.
 	//
 	// NOTE: Within the protocol, the maximum allowed message size is 65535
@@ -85,19 +114,30 @@ const (
 	maxAllowedSize = 32764
 )
 
+// IsRequired returns true if the feature bit is even, and false otherwise.
+func (b FeatureBit) IsRequired() bool {
+	return b&0x01 == 0x00
+}
+
 // Features is a mapping of known feature bits to a descriptive name. All known
 // feature bits must be assigned a name in this mapping, and feature bit pairs
 // must be assigned together for correct behavior.
 var Features = map[FeatureBit]string{
-	DataLossProtectRequired: "data-loss-protect",
-	DataLossProtectOptional: "data-loss-protect",
-	InitialRoutingSync:      "initial-routing-sync",
-	GossipQueriesRequired:   "gossip-queries",
-	GossipQueriesOptional:   "gossip-queries",
-	TLVOnionPayloadRequired: "tlv-onion",
-	TLVOnionPayloadOptional: "tlv-onion",
-	StaticRemoteKeyOptional: "static-remote-key",
-	StaticRemoteKeyRequired: "static-remote-key",
+	DataLossProtectRequired:       "data-loss-protect",
+	DataLossProtectOptional:       "data-loss-protect",
+	InitialRoutingSync:            "initial-routing-sync",
+	UpfrontShutdownScriptRequired: "upfront-shutdown-script",
+	UpfrontShutdownScriptOptional: "upfront-shutdown-script",
+	GossipQueriesRequired:         "gossip-queries",
+	GossipQueriesOptional:         "gossip-queries",
+	TLVOnionPayloadRequired:       "tlv-onion",
+	TLVOnionPayloadOptional:       "tlv-onion",
+	StaticRemoteKeyOptional:       "static-remote-key",
+	StaticRemoteKeyRequired:       "static-remote-key",
+	PaymentAddrOptional:           "payment-addr",
+	PaymentAddrRequired:           "payment-addr",
+	MPPOptional:                   "multi-path-payments",
+	MPPRequired:                   "multi-path-payments",
 }
 
 // RawFeatureVector represents a set of feature bits as defined in BOLT-09.  A
@@ -216,8 +256,16 @@ func (fv *RawFeatureVector) Encode(w io.Writer) error {
 	return fv.encode(w, length, 8)
 }
 
+// EncodeBase256 writes the feature vector in base256 representation. Every
+// feature is encoded as a bit, and the bit vector is serialized using the least
+// number of bytes.
+func (fv *RawFeatureVector) EncodeBase256(w io.Writer) error {
+	length := fv.SerializeSize()
+	return fv.encode(w, length, 8)
+}
+
 // EncodeBase32 writes the feature vector in base32 representation. Every feature
-// encoded as a bit, and the bit vector is serialized using the least number of
+// is encoded as a bit, and the bit vector is serialized using the least number of
 // bytes.
 func (fv *RawFeatureVector) EncodeBase32(w io.Writer) error {
 	length := fv.SerializeSize32()
@@ -239,8 +287,8 @@ func (fv *RawFeatureVector) encode(w io.Writer, length, width int) error {
 }
 
 // Decode reads the feature vector from its byte representation. Every feature
-// encoded as a bit, and the bit vector is serialized using the least number of
-// bytes. Since the bit vector length is variable, the first two bytes of the
+// is encoded as a bit, and the bit vector is serialized using the least number
+// of bytes. Since the bit vector length is variable, the first two bytes of the
 // serialization represent the length.
 func (fv *RawFeatureVector) Decode(r io.Reader) error {
 	// Read the length of the feature vector.
@@ -251,6 +299,13 @@ func (fv *RawFeatureVector) Decode(r io.Reader) error {
 	length := binary.BigEndian.Uint16(l[:])
 
 	return fv.decode(r, int(length), 8)
+}
+
+// DecodeBase256 reads the feature vector from its base256 representation. Every
+// feature encoded as a bit, and the bit vector is serialized using the least
+// number of bytes.
+func (fv *RawFeatureVector) DecodeBase256(r io.Reader, length int) error {
+	return fv.decode(r, length, 8)
 }
 
 // DecodeBase32 reads the feature vector from its base32 representation. Every
@@ -306,6 +361,11 @@ func NewFeatureVector(featureVector *RawFeatureVector,
 	}
 }
 
+// EmptyFeatureVector returns a feature vector with no bits set.
+func EmptyFeatureVector() *FeatureVector {
+	return NewFeatureVector(nil, Features)
+}
+
 // HasFeature returns whether a particular feature is included in the set. The
 // feature can be seen as set either if the bit is set directly OR the queried
 // bit has the same meaning as its corresponding even/odd bit, which is set
@@ -335,9 +395,9 @@ func (fv *FeatureVector) UnknownRequiredFeatures() []FeatureBit {
 func (fv *FeatureVector) Name(bit FeatureBit) string {
 	name, known := fv.featureNames[bit]
 	if !known {
-		name = "unknown"
+		return "unknown"
 	}
-	return fmt.Sprintf("%s(%d)", name, bit)
+	return name
 }
 
 // IsKnown returns whether this feature bit represents a known feature.
@@ -355,4 +415,20 @@ func (fv *FeatureVector) isFeatureBitPair(bit FeatureBit) bool {
 	name1, known1 := fv.featureNames[bit]
 	name2, known2 := fv.featureNames[bit^1]
 	return known1 && known2 && name1 == name2
+}
+
+// Features returns the set of raw features contained in the feature vector.
+func (fv *FeatureVector) Features() map[FeatureBit]struct{} {
+	fs := make(map[FeatureBit]struct{}, len(fv.RawFeatureVector.features))
+	for b := range fv.RawFeatureVector.features {
+		fs[b] = struct{}{}
+	}
+	return fs
+}
+
+// Clone copies a feature vector, carrying over its feature bits. The feature
+// names are not copied.
+func (fv *FeatureVector) Clone() *FeatureVector {
+	features := fv.RawFeatureVector.Clone()
+	return NewFeatureVector(features, fv.featureNames)
 }

@@ -26,10 +26,12 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/wtclientrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 	"github.com/lightningnetwork/lnd/monitoring"
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/peernotifier"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/localchans"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/watchtower"
@@ -65,12 +67,12 @@ var (
 func init() {
 	setSubLogger("LTND", ltndLog, signal.UseLogger)
 	setSubLogger("ATPL", atplLog, autopilot.UseLogger)
-	setSubLogger("PEER", peerLog, nil)
-	setSubLogger("RPCS", rpcsLog, nil)
-	setSubLogger("SRVR", srvrLog, nil)
-	setSubLogger("FNDG", fndgLog, nil)
-	setSubLogger("UTXN", utxnLog, nil)
-	setSubLogger("BRAR", brarLog, nil)
+	setSubLogger("PEER", peerLog)
+	setSubLogger("RPCS", rpcsLog)
+	setSubLogger("SRVR", srvrLog)
+	setSubLogger("FNDG", fndgLog)
+	setSubLogger("UTXN", utxnLog)
+	setSubLogger("BRAR", brarLog)
 
 	addSubLogger("LNWL", lnwallet.UseLogger)
 	addSubLogger("DISC", discovery.UseLogger)
@@ -78,7 +80,6 @@ func init() {
 	addSubLogger("CHDB", channeldb.UseLogger)
 	addSubLogger("HSWC", htlcswitch.UseLogger)
 	addSubLogger("CMGR", connmgr.UseLogger)
-	addSubLogger("CRTR", routing.UseLogger)
 	addSubLogger("BTCN", neutrino.UseLogger)
 	addSubLogger("CNCT", contractcourt.UseLogger)
 	addSubLogger("SPHX", sphinx.UseLogger)
@@ -96,26 +97,30 @@ func init() {
 	addSubLogger("PROM", monitoring.UseLogger)
 	addSubLogger("WTCL", wtclient.UseLogger)
 	addSubLogger("PRNF", peernotifier.UseLogger)
+	addSubLogger("CHFD", chanfunding.UseLogger)
 
+	addSubLogger(routing.Subsystem, routing.UseLogger, localchans.UseLogger)
 	addSubLogger(routerrpc.Subsystem, routerrpc.UseLogger)
 	addSubLogger(wtclientrpc.Subsystem, wtclientrpc.UseLogger)
 	addSubLogger(chanfitness.Subsystem, chanfitness.UseLogger)
 }
 
 // addSubLogger is a helper method to conveniently create and register the
-// logger of a sub system.
-func addSubLogger(subsystem string, useLogger func(btclog.Logger)) {
+// logger of one or more sub systems.
+func addSubLogger(subsystem string, useLoggers ...func(btclog.Logger)) {
+	// Create and register just a single logger to prevent them from
+	// overwriting each other internally.
 	logger := build.NewSubLogger(subsystem, logWriter.GenSubLogger)
-	setSubLogger(subsystem, logger, useLogger)
+	setSubLogger(subsystem, logger, useLoggers...)
 }
 
 // setSubLogger is a helper method to conveniently register the logger of a sub
 // system.
 func setSubLogger(subsystem string, logger btclog.Logger,
-	useLogger func(btclog.Logger)) {
+	useLoggers ...func(btclog.Logger)) {
 
 	logWriter.RegisterSubLogger(subsystem, logger)
-	if useLogger != nil {
+	for _, useLogger := range useLoggers {
 		useLogger(logger)
 	}
 }

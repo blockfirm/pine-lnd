@@ -7,7 +7,13 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/record"
+)
+
+var (
+	emptyFeatures = lnwire.NewFeatureVector(nil, lnwire.Features)
 )
 
 func randInvoice(value lnwire.MilliSatoshi) (*Invoice, error) {
@@ -21,14 +27,14 @@ func randInvoice(value lnwire.MilliSatoshi) (*Invoice, error) {
 		// failures due to the monotonic time component.
 		CreationDate: time.Unix(time.Now().Unix(), 0),
 		Terms: ContractTerm{
+			Expiry:          4000,
 			PaymentPreimage: pre,
 			Value:           value,
+			Features:        emptyFeatures,
 		},
-		Htlcs:  map[CircuitKey]*InvoiceHTLC{},
-		Expiry: 4000,
+		Htlcs: map[CircuitKey]*InvoiceHTLC{},
 	}
 	i.Memo = []byte("memo")
-	i.Receipt = []byte("receipt")
 
 	// Create a random byte slice of MaxPaymentRequestSize bytes to be used
 	// as a dummy paymentrequest, and  determine if it should be set based
@@ -44,6 +50,29 @@ func randInvoice(value lnwire.MilliSatoshi) (*Invoice, error) {
 	}
 
 	return i, nil
+}
+
+// Tests that pending invoices are those which are either in ContractOpen or
+// in ContractAccepted state.
+func TestInvoiceIsPending(t *testing.T) {
+	contractStates := []ContractState{
+		ContractOpen, ContractSettled, ContractCanceled, ContractAccepted,
+	}
+
+	for _, state := range contractStates {
+		invoice := Invoice{
+			State: state,
+		}
+
+		// We expect that an invoice is pending if it's either in ContractOpen
+		// or ContractAccepted state.
+		pending := (state == ContractOpen || state == ContractAccepted)
+
+		if invoice.IsPending() != pending {
+			t.Fatalf("expected pending: %v, got: %v, invoice: %v",
+				pending, invoice.IsPending(), invoice)
+		}
+	}
 }
 
 func TestInvoiceWorkflow(t *testing.T) {
@@ -64,10 +93,10 @@ func TestInvoiceWorkflow(t *testing.T) {
 		Htlcs:        map[CircuitKey]*InvoiceHTLC{},
 	}
 	fakeInvoice.Memo = []byte("memo")
-	fakeInvoice.Receipt = []byte("receipt")
 	fakeInvoice.PaymentRequest = []byte("")
 	copy(fakeInvoice.Terms.PaymentPreimage[:], rev[:])
 	fakeInvoice.Terms.Value = lnwire.NewMSatFromSatoshis(10000)
+	fakeInvoice.Terms.Features = emptyFeatures
 
 	paymentHash := fakeInvoice.Terms.PaymentPreimage.Hash()
 
@@ -110,7 +139,7 @@ func TestInvoiceWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to fetch invoice: %v", err)
 	}
-	if dbInvoice2.Terms.State != ContractSettled {
+	if dbInvoice2.State != ContractSettled {
 		t.Fatalf("invoice should now be settled but isn't")
 	}
 	if dbInvoice2.SettleDate.IsZero() {
@@ -177,6 +206,71 @@ func TestInvoiceWorkflow(t *testing.T) {
 				spew.Sdump(invoices[i]),
 				spew.Sdump(dbInvoices[i]))
 		}
+	}
+}
+
+// TestInvoiceCancelSingleHtlc tests that a single htlc can be canceled on the
+// invoice.
+func TestInvoiceCancelSingleHtlc(t *testing.T) {
+	t.Parallel()
+
+	db, cleanUp, err := makeTestDB()
+	defer cleanUp()
+	if err != nil {
+		t.Fatalf("unable to make test db: %v", err)
+	}
+
+	testInvoice := &Invoice{
+		Htlcs: map[CircuitKey]*InvoiceHTLC{},
+	}
+	testInvoice.Terms.Value = lnwire.NewMSatFromSatoshis(10000)
+	testInvoice.Terms.Features = emptyFeatures
+
+	var paymentHash lntypes.Hash
+	if _, err := db.AddInvoice(testInvoice, paymentHash); err != nil {
+		t.Fatalf("unable to find invoice: %v", err)
+	}
+
+	// Accept an htlc on this invoice.
+	key := CircuitKey{ChanID: lnwire.NewShortChanIDFromInt(1), HtlcID: 4}
+	htlc := HtlcAcceptDesc{
+		Amt:           500,
+		CustomRecords: make(record.CustomSet),
+	}
+	invoice, err := db.UpdateInvoice(paymentHash,
+		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
+			return &InvoiceUpdateDesc{
+				AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
+					key: &htlc,
+				},
+			}, nil
+		})
+	if err != nil {
+		t.Fatalf("unable to add invoice htlc: %v", err)
+	}
+	if len(invoice.Htlcs) != 1 {
+		t.Fatalf("expected the htlc to be added")
+	}
+	if invoice.Htlcs[key].State != HtlcStateAccepted {
+		t.Fatalf("expected htlc in state accepted")
+	}
+
+	// Cancel the htlc again.
+	invoice, err = db.UpdateInvoice(paymentHash, func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
+		return &InvoiceUpdateDesc{
+			CancelHtlcs: map[CircuitKey]struct{}{
+				key: {},
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("unable to cancel htlc: %v", err)
+	}
+	if len(invoice.Htlcs) != 1 {
+		t.Fatalf("expected the htlc to be present")
+	}
+	if invoice.Htlcs[key].State != HtlcStateCanceled {
+		t.Fatalf("expected htlc in state canceled")
 	}
 }
 
@@ -322,6 +416,116 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 	}
 }
 
+// Tests that FetchAllInvoicesWithPaymentHash returns all invoices with their
+// corresponding payment hashes.
+func TestFetchAllInvoicesWithPaymentHash(t *testing.T) {
+	t.Parallel()
+
+	db, cleanup, err := makeTestDB()
+	defer cleanup()
+	if err != nil {
+		t.Fatalf("unable to make test db: %v", err)
+	}
+
+	// With an empty DB we expect to return no error and an empty list.
+	empty, err := db.FetchAllInvoicesWithPaymentHash(false)
+	if err != nil {
+		t.Fatalf("failed to call FetchAllInvoicesWithPaymentHash on empty DB: %v",
+			err)
+	}
+
+	if len(empty) != 0 {
+		t.Fatalf("expected empty list as a result, got: %v", empty)
+	}
+
+	states := []ContractState{
+		ContractOpen, ContractSettled, ContractCanceled, ContractAccepted,
+	}
+
+	numInvoices := len(states) * 2
+	testPendingInvoices := make(map[lntypes.Hash]*Invoice)
+	testAllInvoices := make(map[lntypes.Hash]*Invoice)
+
+	// Now populate the DB and check if we can get all invoices with their
+	// payment hashes as expected.
+	for i := 1; i <= numInvoices; i++ {
+		invoice, err := randInvoice(lnwire.MilliSatoshi(i))
+		if err != nil {
+			t.Fatalf("unable to create invoice: %v", err)
+		}
+
+		// Set the contract state of the next invoice such that there's an equal
+		// number for all possbile states.
+		invoice.State = states[i%len(states)]
+		paymentHash := invoice.Terms.PaymentPreimage.Hash()
+
+		if invoice.IsPending() {
+			testPendingInvoices[paymentHash] = invoice
+		}
+
+		testAllInvoices[paymentHash] = invoice
+
+		if _, err := db.AddInvoice(invoice, paymentHash); err != nil {
+			t.Fatalf("unable to add invoice: %v", err)
+		}
+	}
+
+	pendingInvoices, err := db.FetchAllInvoicesWithPaymentHash(true)
+	if err != nil {
+		t.Fatalf("can't fetch invoices with payment hash: %v", err)
+	}
+
+	if len(testPendingInvoices) != len(pendingInvoices) {
+		t.Fatalf("expected %v pending invoices, got: %v",
+			len(testPendingInvoices), len(pendingInvoices))
+	}
+
+	allInvoices, err := db.FetchAllInvoicesWithPaymentHash(false)
+	if err != nil {
+		t.Fatalf("can't fetch invoices with payment hash: %v", err)
+	}
+
+	if len(testAllInvoices) != len(allInvoices) {
+		t.Fatalf("expected %v invoices, got: %v",
+			len(testAllInvoices), len(allInvoices))
+	}
+
+	for i := range pendingInvoices {
+		expected, ok := testPendingInvoices[pendingInvoices[i].PaymentHash]
+		if !ok {
+			t.Fatalf("coulnd't find invoice with hash: %v",
+				pendingInvoices[i].PaymentHash)
+		}
+
+		// Zero out add index to not confuse DeepEqual.
+		pendingInvoices[i].Invoice.AddIndex = 0
+		expected.AddIndex = 0
+
+		if !reflect.DeepEqual(*expected, pendingInvoices[i].Invoice) {
+			t.Fatalf("expected: %v, got: %v",
+				spew.Sdump(expected), spew.Sdump(pendingInvoices[i].Invoice))
+		}
+	}
+
+	for i := range allInvoices {
+		expected, ok := testAllInvoices[allInvoices[i].PaymentHash]
+		if !ok {
+			t.Fatalf("coulnd't find invoice with hash: %v",
+				allInvoices[i].PaymentHash)
+		}
+
+		// Zero out add index to not confuse DeepEqual.
+		allInvoices[i].Invoice.AddIndex = 0
+		expected.AddIndex = 0
+
+		if !reflect.DeepEqual(*expected, allInvoices[i].Invoice) {
+			t.Fatalf("expected: %v, got: %v",
+				spew.Sdump(expected), spew.Sdump(allInvoices[i].Invoice))
+		}
+	}
+
+}
+
 // TestDuplicateSettleInvoice tests that if we add a new invoice and settle it
 // twice, then the second time we also receive the invoice that we settled as a
 // return argument.
@@ -333,7 +537,7 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to make test db: %v", err)
 	}
-	db.now = func() time.Time { return time.Unix(1, 0) }
+	db.Now = func() time.Time { return time.Unix(1, 0) }
 
 	// We'll start out by creating an invoice and writing it to the DB.
 	amt := lnwire.NewMSatFromSatoshis(1000)
@@ -359,15 +563,16 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 	// We'll update what we expect the settle invoice to be so that our
 	// comparison below has the correct assumption.
 	invoice.SettleIndex = 1
-	invoice.Terms.State = ContractSettled
+	invoice.State = ContractSettled
 	invoice.AmtPaid = amt
 	invoice.SettleDate = dbInvoice.SettleDate
 	invoice.Htlcs = map[CircuitKey]*InvoiceHTLC{
 		{}: {
-			Amt:         amt,
-			AcceptTime:  time.Unix(1, 0),
-			ResolveTime: time.Unix(1, 0),
-			State:       HtlcStateSettled,
+			Amt:           amt,
+			AcceptTime:    time.Unix(1, 0),
+			ResolveTime:   time.Unix(1, 0),
+			State:         HtlcStateSettled,
+			CustomRecords: make(record.CustomSet),
 		},
 	}
 
@@ -394,6 +599,69 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 	if !reflect.DeepEqual(dbInvoice, invoice) {
 		t.Fatalf("wrong invoice after second settle, expected %v got %v",
 			spew.Sdump(invoice), spew.Sdump(dbInvoice))
+	}
+}
+
+// TestFetchAllInvoices tests that FetchAllInvoices works as expected.
+func TestFetchAllInvoices(t *testing.T) {
+	t.Parallel()
+
+	db, cleanUp, err := makeTestDB()
+	defer cleanUp()
+	if err != nil {
+		t.Fatalf("unable to make test db: %v", err)
+	}
+
+	contractStates := []ContractState{
+		ContractOpen, ContractSettled, ContractCanceled, ContractAccepted,
+	}
+
+	numInvoices := len(contractStates) * 2
+
+	var expectedPendingInvoices []Invoice
+	var expectedAllInvoices []Invoice
+
+	for i := 1; i <= numInvoices; i++ {
+		invoice, err := randInvoice(lnwire.MilliSatoshi(i))
+
+		if err != nil {
+			t.Fatalf("unable to create invoice: %v", err)
+		}
+
+		invoice.AddIndex = uint64(i)
+		// Set the contract state of the next invoice such that there's an equal
+		// number for all possbile states.
+		invoice.State = contractStates[i%len(contractStates)]
+
+		paymentHash := invoice.Terms.PaymentPreimage.Hash()
+		if invoice.IsPending() {
+			expectedPendingInvoices = append(expectedPendingInvoices, *invoice)
+		}
+		expectedAllInvoices = append(expectedAllInvoices, *invoice)
+
+		if _, err := db.AddInvoice(invoice, paymentHash); err != nil {
+			t.Fatalf("unable to add invoice: %v", err)
+		}
+	}
+
+	pendingInvoices, err := db.FetchAllInvoices(true)
+	if err != nil {
+		t.Fatalf("unable to fetch all pending invoices: %v", err)
+	}
+
+	allInvoices, err := db.FetchAllInvoices(false)
+	if err != nil {
+		t.Fatalf("unable to fetch all non pending invoices: %v", err)
+	}
+
+	if !reflect.DeepEqual(pendingInvoices, expectedPendingInvoices) {
+		t.Fatalf("pending invoices: %v\n != \n expected einvoices: %v",
+			spew.Sdump(pendingInvoices), spew.Sdump(expectedPendingInvoices))
+	}
+
+	if !reflect.DeepEqual(allInvoices, expectedAllInvoices) {
+		t.Fatalf("pending + non pending: %v\n != \n expected: %v",
+			spew.Sdump(allInvoices), spew.Sdump(expectedAllInvoices))
 	}
 }
 
@@ -675,20 +943,86 @@ func TestQueryInvoices(t *testing.T) {
 // settles the invoice with the given amount.
 func getUpdateInvoice(amt lnwire.MilliSatoshi) InvoiceUpdateCallback {
 	return func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-		if invoice.Terms.State == ContractSettled {
+		if invoice.State == ContractSettled {
 			return nil, ErrInvoiceAlreadySettled
 		}
 
+		noRecords := make(record.CustomSet)
+
 		update := &InvoiceUpdateDesc{
-			Preimage: invoice.Terms.PaymentPreimage,
-			State:    ContractSettled,
-			Htlcs: map[CircuitKey]*HtlcAcceptDesc{
+			State: &InvoiceStateUpdateDesc{
+				Preimage: invoice.Terms.PaymentPreimage,
+				NewState: ContractSettled,
+			},
+			AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
 				{}: {
-					Amt: amt,
+					Amt:           amt,
+					CustomRecords: noRecords,
 				},
 			},
 		}
 
 		return update, nil
+	}
+}
+
+// TestCustomRecords tests that custom records are properly recorded in the
+// invoice database.
+func TestCustomRecords(t *testing.T) {
+	t.Parallel()
+
+	db, cleanUp, err := makeTestDB()
+	defer cleanUp()
+	if err != nil {
+		t.Fatalf("unable to make test db: %v", err)
+	}
+
+	testInvoice := &Invoice{
+		Htlcs: map[CircuitKey]*InvoiceHTLC{},
+	}
+	testInvoice.Terms.Value = lnwire.NewMSatFromSatoshis(10000)
+	testInvoice.Terms.Features = emptyFeatures
+
+	var paymentHash lntypes.Hash
+	if _, err := db.AddInvoice(testInvoice, paymentHash); err != nil {
+		t.Fatalf("unable to find invoice: %v", err)
+	}
+
+	// Accept an htlc with custom records on this invoice.
+	key := CircuitKey{ChanID: lnwire.NewShortChanIDFromInt(1), HtlcID: 4}
+
+	records := record.CustomSet{
+		100000: []byte{},
+		100001: []byte{1, 2},
+	}
+
+	_, err = db.UpdateInvoice(paymentHash,
+		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
+			return &InvoiceUpdateDesc{
+				AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
+					key: {
+						Amt:           500,
+						CustomRecords: records,
+					},
+				},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("unable to add invoice htlc: %v", err)
+	}
+
+	// Retrieve the invoice from that database and verify that the custom
+	// records are present.
+	dbInvoice, err := db.LookupInvoice(paymentHash)
+	if err != nil {
+		t.Fatalf("unable to lookup invoice: %v", err)
+	}
+
+	if len(dbInvoice.Htlcs) != 1 {
+		t.Fatalf("expected the htlc to be added")
+	}
+	if !reflect.DeepEqual(records, dbInvoice.Htlcs[key].CustomRecords) {
+		t.Fatalf("invalid custom records")
 	}
 }

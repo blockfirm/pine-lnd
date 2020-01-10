@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,10 +20,14 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
+	"github.com/lightninglabs/protobuf-hex-display/json"
+	"github.com/lightninglabs/protobuf-hex-display/jsonpb"
+	"github.com/lightninglabs/protobuf-hex-display/proto"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/record"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/walletunlocker"
 	"github.com/urfave/cli"
 	"golang.org/x/crypto/ssh/terminal"
@@ -589,6 +593,12 @@ var openChannelCommand = cli.Command{
 	amount to the remote node as part of the channel opening. Once the channel is open,
 	a channelPoint (txid:vout) of the funding output is returned.
 
+	If the remote peer supports the option upfront shutdown feature bit (query 
+	listpeers to see their supported feature bits), an address to enforce
+	payout of funds on cooperative close can optionally be provided. Note that
+	if you set this value, you will not be able to cooperatively close out to
+	another address.
+
 	One can manually set the fee to be used for the funding transaction via either
 	the --conf_target or --sat_per_byte arguments. This is optional.`,
 	ArgsUsage: "node-key local-amt push-amt",
@@ -658,6 +668,13 @@ var openChannelCommand = cli.Command{
 				"transaction must satisfy",
 			Value: 1,
 		},
+		cli.StringFlag{
+			Name: "close_address",
+			Usage: "(optional) an address to enforce payout of our " +
+				"funds to on cooperative close. Note that if this " +
+				"value is set on channel open, you will *not* be " +
+				"able to cooperatively close to a different address.",
+		},
 	},
 	Action: actionDecorator(openChannel),
 }
@@ -685,6 +702,7 @@ func openChannel(ctx *cli.Context) error {
 		RemoteCsvDelay:   uint32(ctx.Uint64("remote_csv_delay")),
 		MinConfs:         minConfs,
 		SpendUnconfirmed: minConfs == 0,
+		CloseAddress:     ctx.String("close_address"),
 	}
 
 	switch {
@@ -834,10 +852,15 @@ var closeChannelCommand = cli.Command{
 	transaction will be broadcast to the network. As a result, any settled
 	funds will be time locked for a few blocks before they can be spent.
 
-	In the case of a cooperative closure, One can manually set the fee to
+	In the case of a cooperative closure, one can manually set the fee to
 	be used for the closing transaction via either the --conf_target or
 	--sat_per_byte arguments. This will be the starting value used during
 	fee negotiation. This is optional.
+
+	In the case of a cooperative closure, one can manually set the address
+	to deliver funds to upon closure. This is optional, and may only be used
+	if an upfront shutdown address has not already been set. If neither are
+	set the funds will be delivered to a new wallet address.
 
 	To view which funding_txids/output_indexes can be used for a channel close,
 	see the channel_point values within the listchannels command output.
@@ -873,6 +896,13 @@ var closeChannelCommand = cli.Command{
 				"sat/byte that should be used when crafting " +
 				"the transaction",
 		},
+		cli.StringFlag{
+			Name: "delivery_addr",
+			Usage: "(optional) an address to deliver funds " +
+				"upon cooperative channel closing, may only " +
+				"be used if an upfront shutdown addresss is not" +
+				"already set",
+		},
 	},
 	Action: actionDecorator(closeChannel),
 }
@@ -894,10 +924,11 @@ func closeChannel(ctx *cli.Context) error {
 
 	// TODO(roasbeef): implement time deadline within server
 	req := &lnrpc.CloseChannelRequest{
-		ChannelPoint: channelPoint,
-		Force:        ctx.Bool("force"),
-		TargetConf:   int32(ctx.Int64("conf_target")),
-		SatPerByte:   ctx.Int64("sat_per_byte"),
+		ChannelPoint:    channelPoint,
+		Force:           ctx.Bool("force"),
+		TargetConf:      int32(ctx.Int64("conf_target")),
+		SatPerByte:      ctx.Int64("sat_per_byte"),
+		DeliveryAddress: ctx.String("delivery_addr"),
 	}
 
 	// After parsing the request, we'll spin up a goroutine that will
@@ -1400,6 +1431,86 @@ func create(ctx *cli.Context) error {
 	client, cleanUp := getWalletUnlockerClient(ctx)
 	defer cleanUp()
 
+	var (
+		chanBackups *lnrpc.ChanBackupSnapshot
+
+		// We use var restoreSCB to track if we will be including an SCB
+		// recovery in the init wallet request.
+		restoreSCB = false
+	)
+
+	backups, err := parseChanBackups(ctx)
+
+	// We'll check to see if the user provided any static channel backups (SCB),
+	// if so, we will warn the user that SCB recovery closes all open channels
+	// and ask them to confirm their intention.
+	// If the user agrees, we'll add the SCB recovery onto the final init wallet
+	// request.
+	switch {
+	// parseChanBackups returns an errMissingBackup error (which we ignore) if
+	// the user did not request a SCB recovery.
+	case err == errMissingChanBackup:
+
+	// Passed an invalid channel backup file.
+	case err != nil:
+		return fmt.Errorf("unable to parse chan backups: %v", err)
+
+	// We have an SCB recovery option with a valid backup file.
+	default:
+
+	warningLoop:
+		for {
+
+			fmt.Println()
+			fmt.Printf("WARNING: You are attempting to restore from a " +
+				"static channel backup (SCB) file.\nThis action will CLOSE " +
+				"all currently open channels, and you will pay on-chain fees." +
+				"\n\nAre you sure you want to recover funds from a" +
+				" static channel backup? (Enter y/n): ")
+
+			reader := bufio.NewReader(os.Stdin)
+			answer, err := reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
+
+			answer = strings.TrimSpace(answer)
+			answer = strings.ToLower(answer)
+
+			switch answer {
+			case "y":
+				restoreSCB = true
+				break warningLoop
+			case "n":
+				fmt.Println("Aborting SCB recovery")
+				return nil
+			}
+		}
+	}
+
+	// Proceed with SCB recovery.
+	if restoreSCB {
+		fmt.Println("Static Channel Backup (SCB) recovery selected!")
+		if backups != nil {
+			switch {
+			case backups.GetChanBackups() != nil:
+				singleBackup := backups.GetChanBackups()
+				chanBackups = &lnrpc.ChanBackupSnapshot{
+					SingleChanBackups: singleBackup,
+				}
+
+			case backups.GetMultiChanBackup() != nil:
+				multiBackup := backups.GetMultiChanBackup()
+				chanBackups = &lnrpc.ChanBackupSnapshot{
+					MultiChanBackup: &lnrpc.MultiChanBackup{
+						MultiChanBackup: multiBackup,
+					},
+				}
+			}
+		}
+
+	}
+
 	walletPassword, err := capturePassword(
 		"Input wallet password: ", false, walletunlocker.ValidatePassword,
 	)
@@ -1567,34 +1678,6 @@ mnemonicCheck:
 
 	fmt.Println("\n!!!YOU MUST WRITE DOWN THIS SEED TO BE ABLE TO " +
 		"RESTORE THE WALLET!!!")
-
-	// We'll also check to see if they provided any static channel backups,
-	// if so, then we'll also tack these onto the final init wallet request.
-	// We can ignore the errMissingChanBackup error as it's an optional
-	// field.
-	backups, err := parseChanBackups(ctx)
-	if err != nil && err != errMissingChanBackup {
-		return fmt.Errorf("unable to parse chan backups: %v", err)
-	}
-
-	var chanBackups *lnrpc.ChanBackupSnapshot
-	if backups != nil {
-		switch {
-		case backups.GetChanBackups() != nil:
-			singleBackup := backups.GetChanBackups()
-			chanBackups = &lnrpc.ChanBackupSnapshot{
-				SingleChanBackups: singleBackup,
-			}
-
-		case backups.GetMultiChanBackup() != nil:
-			multiBackup := backups.GetMultiChanBackup()
-			chanBackups = &lnrpc.ChanBackupSnapshot{
-				MultiChanBackup: &lnrpc.MultiChanBackup{
-					MultiChanBackup: multiBackup,
-				},
-			}
-		}
-	}
 
 	// With either the user's prior cipher seed, or a newly generated one,
 	// we'll go ahead and initialize the wallet.
@@ -1858,51 +1941,7 @@ func getInfo(ctx *cli.Context) error {
 		return err
 	}
 
-	chains := make([]chain, len(resp.Chains))
-	for i, c := range resp.Chains {
-		chains[i] = chain{
-			Chain:   c.Chain,
-			Network: c.Network,
-		}
-	}
-
-	// We print a struct that mimics the proto definition of GetInfoResponse
-	// but has a better ordering for the same list of fields.
-	printJSON(struct {
-		Version             string   `json:"version"`
-		IdentityPubkey      string   `json:"identity_pubkey"`
-		Alias               string   `json:"alias"`
-		Color               string   `json:"color"`
-		NumPendingChannels  uint32   `json:"num_pending_channels"`
-		NumActiveChannels   uint32   `json:"num_active_channels"`
-		NumInactiveChannels uint32   `json:"num_inactive_channels"`
-		NumPeers            uint32   `json:"num_peers"`
-		BlockHeight         uint32   `json:"block_height"`
-		BlockHash           string   `json:"block_hash"`
-		BestHeaderTimestamp int64    `json:"best_header_timestamp"`
-		SyncedToChain       bool     `json:"synced_to_chain"`
-		SyncedToGraph       bool     `json:"synced_to_graph"`
-		Testnet             bool     `json:"testnet"`
-		Chains              []chain  `json:"chains"`
-		Uris                []string `json:"uris"`
-	}{
-		Version:             resp.Version,
-		IdentityPubkey:      resp.IdentityPubkey,
-		Alias:               resp.Alias,
-		Color:               resp.Color,
-		NumPendingChannels:  resp.NumPendingChannels,
-		NumActiveChannels:   resp.NumActiveChannels,
-		NumInactiveChannels: resp.NumInactiveChannels,
-		NumPeers:            resp.NumPeers,
-		BlockHeight:         resp.BlockHeight,
-		BlockHash:           resp.BlockHash,
-		BestHeaderTimestamp: resp.BestHeaderTimestamp,
-		SyncedToChain:       resp.SyncedToChain,
-		SyncedToGraph:       resp.SyncedToGraph,
-		Testnet:             resp.Testnet,
-		Chains:              chains,
-		Uris:                resp.Uris,
-	})
+	printRespJSON(resp)
 	return nil
 }
 
@@ -2040,11 +2079,18 @@ func closedChannels(ctx *cli.Context) error {
 	return nil
 }
 
-var cltvLimitFlag = cli.UintFlag{
-	Name: "cltv_limit",
-	Usage: "the maximum time lock that may be used for " +
-		"this payment",
-}
+var (
+	cltvLimitFlag = cli.UintFlag{
+		Name: "cltv_limit",
+		Usage: "the maximum time lock that may be used for " +
+			"this payment",
+	}
+
+	lastHopFlag = cli.StringFlag{
+		Name:  "last_hop",
+		Usage: "pubkey of the last hop to use for this payment",
+	}
+)
 
 // paymentFlags returns common flags for sendpayment and payinvoice.
 func paymentFlags() []cli.Flag {
@@ -2065,6 +2111,7 @@ func paymentFlags() []cli.Flag {
 				"payment",
 		},
 		cltvLimitFlag,
+		lastHopFlag,
 		cli.Uint64Flag{
 			Name: "outgoing_chan_id",
 			Usage: "short channel id of the outgoing channel to " +
@@ -2074,6 +2121,10 @@ func paymentFlags() []cli.Flag {
 		cli.BoolFlag{
 			Name:  "force, f",
 			Usage: "will skip payment request confirmation",
+		},
+		cli.BoolFlag{
+			Name:  "allow_self_payment",
+			Usage: "allow sending a circular payment to self",
 		},
 	}
 }
@@ -2096,12 +2147,6 @@ var sendPaymentCommand = cli.Command{
 	    * --amt=A
 	    * --final_cltv_delta=T
 	    * --payment_hash=H
-
-	The --debug_send flag is provided for usage *purely* in test
-	environments. If specified, then the payment hash isn't required, as
-	it'll use the hash of all zeroes. This mode allows one to quickly test
-	payment connectivity without having to create an invoice at the
-	destination.
 	`,
 	ArgsUsage: "dest amt payment_hash final_cltv_delta | --pay_req=[payment request]",
 	Flags: append(paymentFlags(),
@@ -2118,13 +2163,13 @@ var sendPaymentCommand = cli.Command{
 			Name:  "payment_hash, r",
 			Usage: "the hash to use within the payment's HTLC",
 		},
-		cli.BoolFlag{
-			Name:  "debug_send",
-			Usage: "use the debug rHash when sending the HTLC",
-		},
 		cli.Int64Flag{
 			Name:  "final_cltv_delta",
 			Usage: "the number of blocks the last hop has to reveal the preimage",
+		},
+		cli.BoolFlag{
+			Name:  "key_send",
+			Usage: "will generate a pre-image and encode it in the sphinx packet, a dest must be set [experimental]",
 		},
 	),
 	Action: sendPayment,
@@ -2228,11 +2273,25 @@ func sendPayment(ctx *cli.Context) error {
 		Amt:  amount,
 	}
 
-	if ctx.Bool("debug_send") && (ctx.IsSet("payment_hash") || args.Present()) {
-		return fmt.Errorf("do not provide a payment hash with debug send")
-	} else if !ctx.Bool("debug_send") {
-		var rHash []byte
+	var rHash []byte
 
+	if ctx.Bool("key_send") {
+		if ctx.IsSet("payment_hash") {
+			return errors.New("cannot set payment hash when using " +
+				"key send")
+		}
+		var preimage lntypes.Preimage
+		if _, err := rand.Read(preimage[:]); err != nil {
+			return err
+		}
+
+		req.DestCustomRecords = map[uint64][]byte{
+			record.KeySendType: preimage[:],
+		}
+
+		hash := preimage.Hash()
+		rHash = hash[:]
+	} else {
 		switch {
 		case ctx.IsSet("payment_hash"):
 			rHash, err = hex.DecodeString(ctx.String("payment_hash"))
@@ -2242,26 +2301,26 @@ func sendPayment(ctx *cli.Context) error {
 		default:
 			return fmt.Errorf("payment hash argument missing")
 		}
+	}
 
+	if err != nil {
+		return err
+	}
+	if len(rHash) != 32 {
+		return fmt.Errorf("payment hash must be exactly 32 "+
+			"bytes, is instead %v", len(rHash))
+	}
+	req.PaymentHash = rHash
+
+	switch {
+	case ctx.IsSet("final_cltv_delta"):
+		req.FinalCltvDelta = int32(ctx.Int64("final_cltv_delta"))
+	case args.Present():
+		delta, err := strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
 			return err
 		}
-		if len(rHash) != 32 {
-			return fmt.Errorf("payment hash must be exactly 32 "+
-				"bytes, is instead %v", len(rHash))
-		}
-		req.PaymentHash = rHash
-
-		switch {
-		case ctx.IsSet("final_cltv_delta"):
-			req.FinalCltvDelta = int32(ctx.Int64("final_cltv_delta"))
-		case args.Present():
-			delta, err := strconv.ParseInt(args.First(), 10, 64)
-			if err != nil {
-				return err
-			}
-			req.FinalCltvDelta = int32(delta)
-		}
+		req.FinalCltvDelta = int32(delta)
 	}
 
 	return sendPaymentRequest(ctx, req)
@@ -2281,7 +2340,19 @@ func sendPaymentRequest(ctx *cli.Context, req *lnrpc.SendRequest) error {
 	req.FeeLimit = feeLimit
 
 	req.OutgoingChanId = ctx.Uint64("outgoing_chan_id")
+	if ctx.IsSet(lastHopFlag.Name) {
+		lastHop, err := route.NewVertexFromStr(
+			ctx.String(lastHopFlag.Name),
+		)
+		if err != nil {
+			return err
+		}
+		req.LastHopPubkey = lastHop[:]
+	}
+
 	req.CltvLimit = uint32(ctx.Int(cltvLimitFlag.Name))
+
+	req.AllowSelfPayment = ctx.Bool("allow_self_payment")
 
 	amt := req.Amt
 
@@ -2321,15 +2392,7 @@ func sendPaymentRequest(ctx *cli.Context, req *lnrpc.SendRequest) error {
 
 	paymentStream.CloseSend()
 
-	printJSON(struct {
-		E string       `json:"payment_error"`
-		P string       `json:"payment_preimage"`
-		R *lnrpc.Route `json:"payment_route"`
-	}{
-		E: resp.PaymentError,
-		P: hex.EncodeToString(resp.PaymentPreimage),
-		R: resp.PaymentRoute,
-	})
+	printRespJSON(resp)
 
 	// If we get a payment error back, we pass an error
 	// up to main which eventually calls fatal() and returns
@@ -2385,7 +2448,7 @@ var sendToRouteCommand = cli.Command{
 	Send a payment over Lightning using a specific route. One must specify
 	the route to attempt and the payment hash. This command can even
 	be chained with the response to queryroutes or buildroute. This command
-	can be used to implement channel rebalancing by crafting a self-route, 
+	can be used to implement channel rebalancing by crafting a self-route,
 	or even atomic swaps using a self-route that crosses multiple chains.
 
 	There are three ways to specify a route:
@@ -2531,15 +2594,7 @@ func sendToRouteRequest(ctx *cli.Context, req *lnrpc.SendToRouteRequest) error {
 		return err
 	}
 
-	printJSON(struct {
-		E string       `json:"payment_error"`
-		P string       `json:"payment_preimage"`
-		R *lnrpc.Route `json:"payment_route"`
-	}{
-		E: resp.PaymentError,
-		P: hex.EncodeToString(resp.PaymentPreimage),
-		R: resp.PaymentRoute,
-	})
+	printRespJSON(resp)
 
 	return nil
 }
@@ -2560,10 +2615,6 @@ var addInvoiceCommand = cli.Command{
 			Name: "memo",
 			Usage: "a description of the payment to attach along " +
 				"with the invoice (default=\"\")",
-		},
-		cli.StringFlag{
-			Name:  "receipt",
-			Usage: "an optional cryptographic receipt of payment",
 		},
 		cli.StringFlag{
 			Name: "preimage",
@@ -2609,7 +2660,6 @@ func addInvoice(ctx *cli.Context) error {
 	var (
 		preimage []byte
 		descHash []byte
-		receipt  []byte
 		amt      int64
 		err      error
 	)
@@ -2646,14 +2696,8 @@ func addInvoice(ctx *cli.Context) error {
 		return fmt.Errorf("unable to parse description_hash: %v", err)
 	}
 
-	receipt, err = hex.DecodeString(ctx.String("receipt"))
-	if err != nil {
-		return fmt.Errorf("unable to parse receipt: %v", err)
-	}
-
 	invoice := &lnrpc.Invoice{
 		Memo:            ctx.String("memo"),
-		Receipt:         receipt,
 		RPreimage:       preimage,
 		Value:           amt,
 		DescriptionHash: descHash,
@@ -2667,15 +2711,7 @@ func addInvoice(ctx *cli.Context) error {
 		return err
 	}
 
-	printJSON(struct {
-		RHash    string `json:"r_hash"`
-		PayReq   string `json:"pay_req"`
-		AddIndex uint64 `json:"add_index"`
-	}{
-		RHash:    hex.EncodeToString(resp.RHash),
-		PayReq:   resp.PaymentRequest,
-		AddIndex: resp.AddIndex,
-	})
+	printRespJSON(resp)
 
 	return nil
 }
@@ -3381,6 +3417,12 @@ var updateChannelPolicyCommand = cli.Command{
 				"forwarded HTLCs",
 		},
 		cli.Uint64Flag{
+			Name: "min_htlc_msat",
+			Usage: "if set, the min HTLC size that will be applied " +
+				"to all forwarded HTLCs. If unset, the min HTLC " +
+				"is left unchanged.",
+		},
+		cli.Uint64Flag{
 			Name: "max_htlc_msat",
 			Usage: "if set, the max HTLC size that will be applied " +
 				"to all forwarded HTLCs. If unset, the max HTLC " +
@@ -3500,6 +3542,11 @@ func updateChannelPolicy(ctx *cli.Context) error {
 		FeeRate:       feeRate,
 		TimeLockDelta: uint32(timeLockDelta),
 		MaxHtlcMsat:   ctx.Uint64("max_htlc_msat"),
+	}
+
+	if ctx.IsSet("min_htlc_msat") {
+		req.MinHtlcMsat = ctx.Uint64("min_htlc_msat")
+		req.MinHtlcMsatSpecified = true
 	}
 
 	if chanPoint != nil {
@@ -3750,14 +3797,11 @@ func exportChanBackup(ctx *cli.Context) error {
 
 		printJSON(struct {
 			ChanPoint  string `json:"chan_point"`
-			ChanBackup string `json:"chan_backup"`
+			ChanBackup []byte `json:"chan_backup"`
 		}{
-			ChanPoint: chanPoint.String(),
-			ChanBackup: hex.EncodeToString(
-				chanBackup.ChanBackup,
-			),
-		},
-		)
+			ChanPoint:  chanPoint.String(),
+			ChanBackup: chanBackup.ChanBackup,
+		})
 		return nil
 	}
 
@@ -3795,16 +3839,8 @@ func exportChanBackup(ctx *cli.Context) error {
 		}.String())
 	}
 
-	printJSON(struct {
-		ChanPoints      []string `json:"chan_points"`
-		MultiChanBackup string   `json:"multi_chan_backup"`
-	}{
-		ChanPoints: chanPoints,
-		MultiChanBackup: hex.EncodeToString(
-			chanBackup.MultiChanBackup.MultiChanBackup,
-		),
-	},
-	)
+	printRespJSON(chanBackup)
+
 	return nil
 }
 

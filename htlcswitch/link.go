@@ -71,10 +71,8 @@ const (
 // the error possibly carrying along a ChannelUpdate message that includes the
 // latest policy.
 type ForwardingPolicy struct {
-	// MinHTLC is the smallest HTLC that is to be forwarded. This is
-	// set when a channel is first opened, and will be static for the
-	// lifetime of the channel.
-	MinHTLC lnwire.MilliSatoshi
+	// MinHTLC is the smallest HTLC that is to be forwarded.
+	MinHTLCOut lnwire.MilliSatoshi
 
 	// MaxHTLC is the largest HTLC that is to be forwarded.
 	MaxHTLC lnwire.MilliSatoshi
@@ -257,9 +255,9 @@ type ChannelLinkConfig struct {
 	// configured set of watchtowers.
 	TowerClient TowerClient
 
-	// MaxCltvExpiry is the maximum outgoing timelock that the link should
-	// accept for a forwarded HTLC. The value is relative to the current
-	// block height.
+	// MaxOutgoingCltvExpiry is the maximum outgoing timelock that the link
+	// should accept for a forwarded HTLC. The value is relative to the
+	// current block height.
 	MaxOutgoingCltvExpiry uint32
 
 	// MaxFeeAllocation is the highest allocation we'll allow a channel's
@@ -491,8 +489,8 @@ func (l *channelLink) Stop() {
 
 	l.log.Info("stopping")
 
-	// As the link is stopping, we are no longer interested in hodl events
-	// coming from the invoice registry.
+	// As the link is stopping, we are no longer interested in htlc
+	// resolutions coming from the invoice registry.
 	l.cfg.Registry.HodlUnsubscribeAll(l.hodlQueue.ChanIn())
 
 	if l.cfg.ChainEvents.Cancel != nil {
@@ -1128,11 +1126,11 @@ out:
 		case msg := <-l.upstream:
 			l.handleUpstreamMsg(msg)
 
-		// A hodl event is received. This means that we now have a
+		// A htlc resolution is received. This means that we now have a
 		// resolution for a previously accepted htlc.
 		case hodlItem := <-l.hodlQueue.ChanOut():
-			hodlEvent := hodlItem.(invoices.HodlEvent)
-			err := l.processHodlQueue(hodlEvent)
+			htlcResolution := hodlItem.(invoices.HtlcResolution)
+			err := l.processHodlQueue(htlcResolution)
 			if err != nil {
 				l.fail(LinkFailureError{code: ErrInternalError},
 					fmt.Sprintf("process hodl queue: %v",
@@ -1147,24 +1145,26 @@ out:
 	}
 }
 
-// processHodlQueue processes a received hodl event and continues reading from
-// the hodl queue until no more events remain. When this function returns
-// without an error, the commit tx should be updated.
-func (l *channelLink) processHodlQueue(firstHodlEvent invoices.HodlEvent) error {
+// processHodlQueue processes a received htlc resolution and continues reading
+// from the hodl queue until no more resolutions remain. When this function
+// returns without an error, the commit tx should be updated.
+func (l *channelLink) processHodlQueue(
+	firstResolution invoices.HtlcResolution) error {
+
 	// Try to read all waiting resolution messages, so that they can all be
 	// processed in a single commitment tx update.
-	hodlEvent := firstHodlEvent
+	htlcResolution := firstResolution
 loop:
 	for {
 		// Lookup all hodl htlcs that can be failed or settled with this event.
 		// The hodl htlc must be present in the map.
-		circuitKey := hodlEvent.CircuitKey
+		circuitKey := htlcResolution.CircuitKey
 		hodlHtlc, ok := l.hodlMap[circuitKey]
 		if !ok {
 			return fmt.Errorf("hodl htlc not found: %v", circuitKey)
 		}
 
-		if err := l.processHodlEvent(hodlEvent, hodlHtlc); err != nil {
+		if err := l.processHtlcResolution(htlcResolution, hodlHtlc); err != nil {
 			return err
 		}
 
@@ -1173,7 +1173,7 @@ loop:
 
 		select {
 		case item := <-l.hodlQueue.ChanOut():
-			hodlEvent = item.(invoices.HodlEvent)
+			htlcResolution = item.(invoices.HtlcResolution)
 		default:
 			break loop
 		}
@@ -1187,36 +1187,55 @@ loop:
 	return nil
 }
 
-// processHodlEvent applies a received hodl event to the provided htlc. When
-// this function returns without an error, the commit tx should be updated.
-func (l *channelLink) processHodlEvent(hodlEvent invoices.HodlEvent,
+// processHtlcResolution applies a received htlc resolution to the provided
+// htlc. When this function returns without an error, the commit tx should be
+// updated.
+func (l *channelLink) processHtlcResolution(resolution invoices.HtlcResolution,
 	htlc hodlHtlc) error {
 
-	circuitKey := hodlEvent.CircuitKey
+	circuitKey := resolution.CircuitKey
 
-	// Determine required action for the resolution.
-	if hodlEvent.Preimage != nil {
-		l.log.Debugf("received hodl settle event for %v", circuitKey)
+	// Determine required action for the resolution. If the event's preimage is
+	// non-nil, the htlc must be settled. Otherwise, it should be canceled.
+	if resolution.Preimage != nil {
+		l.log.Debugf("received settle resolution for %v", circuitKey)
 
 		return l.settleHTLC(
-			*hodlEvent.Preimage, htlc.pd.HtlcIndex,
+			*resolution.Preimage, htlc.pd.HtlcIndex,
 			htlc.pd.SourceRef,
 		)
 	}
 
-	l.log.Debugf("received hodl cancel event for %v", circuitKey)
+	l.log.Debugf("received cancel resolution for %v with outcome: %v",
+		circuitKey, resolution.Outcome)
 
-	// In case of a cancel, always return
-	// incorrect_or_unknown_payment_details in order to avoid leaking info.
-	failure := lnwire.NewFailIncorrectDetails(
-		htlc.pd.Amount, uint32(hodlEvent.AcceptHeight),
-	)
+	// Get the lnwire failure message based on the resolution result.
+	failure := getResolutionFailure(resolution, htlc.pd.Amount)
 
 	l.sendHTLCError(
 		htlc.pd.HtlcIndex, failure, htlc.obfuscator,
 		htlc.pd.SourceRef,
 	)
 	return nil
+}
+
+// getResolutionFailure returns the wire message that a htlc resolution should
+// be failed with.
+func getResolutionFailure(resolution invoices.HtlcResolution,
+	amount lnwire.MilliSatoshi) lnwire.FailureMessage {
+
+	// If the resolution has been resolved as part of a MPP timeout, we need
+	// to fail the htlc with lnwire.FailMppTimeout.
+	if resolution.Outcome == invoices.ResultMppTimeout {
+		return &lnwire.FailMPPTimeout{}
+	}
+
+	// If the htlc is not a MPP timeout, we fail it with FailIncorrectDetails
+	// This covers hodl cancels (which return it to avoid leaking information
+	// and other invoice failures such as underpayment or expiry too soon.
+	return lnwire.NewFailIncorrectDetails(
+		amount, uint32(resolution.AcceptHeight),
+	)
 }
 
 // randomFeeUpdateTimeout returns a random timeout between the bounds defined
@@ -2218,9 +2237,9 @@ func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 	// As our first sanity check, we'll ensure that the passed HTLC isn't
 	// too small for the next hop. If so, then we'll cancel the HTLC
 	// directly.
-	if amt < policy.MinHTLC {
+	if amt < policy.MinHTLCOut {
 		l.log.Errorf("outgoing htlc(%x) is too small: min_htlc=%v, "+
-			"htlc_value=%v", payHash[:], policy.MinHTLC,
+			"htlc_value=%v", payHash[:], policy.MinHTLCOut,
 			amt)
 
 		// As part of the returned error, we'll send our latest routing
@@ -2819,21 +2838,7 @@ func (l *channelLink) processExitHop(pd *lnwallet.PaymentDescriptor,
 		invoiceHash, pd.Amount, pd.Timeout, int32(heightNow),
 		circuitKey, l.hodlQueue.ChanIn(), payload,
 	)
-
-	switch err {
-
-	// Cancel htlc if we don't have an invoice for it.
-	case channeldb.ErrInvoiceNotFound:
-		failure := lnwire.NewFailIncorrectDetails(pd.Amount, heightNow)
-		l.sendHTLCError(pd.HtlcIndex, failure, obfuscator, pd.SourceRef)
-
-		return nil
-
-	// No error.
-	case nil:
-
-	// Pass error to caller.
-	default:
+	if err != nil {
 		return err
 	}
 
@@ -2843,15 +2848,15 @@ func (l *channelLink) processExitHop(pd *lnwallet.PaymentDescriptor,
 		obfuscator: obfuscator,
 	}
 
+	// If the event is nil, the invoice is being held, so we save payment
+	// descriptor for future reference.
 	if event == nil {
-		// Save payment descriptor for future reference.
 		l.hodlMap[circuitKey] = htlc
-
 		return nil
 	}
 
 	// Process the received resolution.
-	return l.processHodlEvent(*event, htlc)
+	return l.processHtlcResolution(*event, htlc)
 }
 
 // settleHTLC settles the HTLC on the channel.

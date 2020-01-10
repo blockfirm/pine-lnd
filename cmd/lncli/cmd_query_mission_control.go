@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 
@@ -31,31 +30,7 @@ func queryMissionControl(ctx *cli.Context) error {
 		return err
 	}
 
-	type displayPairHistory struct {
-		NodeFrom, NodeTo      string
-		LastAttemptSuccessful bool
-		Timestamp             int64
-		MinPenalizeAmtSat     int64
-	}
-
-	displayResp := struct {
-		Pairs []displayPairHistory
-	}{}
-
-	for _, n := range snapshot.Pairs {
-		displayResp.Pairs = append(
-			displayResp.Pairs,
-			displayPairHistory{
-				NodeFrom:              hex.EncodeToString(n.NodeFrom),
-				NodeTo:                hex.EncodeToString(n.NodeTo),
-				LastAttemptSuccessful: n.History.LastAttemptSuccessful,
-				Timestamp:             n.History.Timestamp,
-				MinPenalizeAmtSat:     n.History.MinPenalizeAmtSat,
-			},
-		)
-	}
-
-	printJSON(displayResp)
+	printRespJSON(snapshot)
 
 	return nil
 }
