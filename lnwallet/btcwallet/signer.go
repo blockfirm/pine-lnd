@@ -1,17 +1,12 @@
 package btcwallet
 
 import (
-	"fmt"
-
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/walletdb"
-	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -36,54 +31,6 @@ func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, erro
 	}
 
 	return serializers.DeserializeUtxo(utxo)
-
-	// We manually look up the output within the tx store.
-	txid := &prevOut.Hash
-	txDetail, err := base.UnstableAPI(b.wallet).TxDetails(txid)
-	if err != nil {
-		return nil, err
-	} else if txDetail == nil {
-		return nil, lnwallet.ErrNotMine
-	}
-
-	// With the output retrieved, we'll make an additional check to ensure
-	// we actually have control of this output. We do this because the check
-	// above only guarantees that the transaction is somehow relevant to us,
-	// like in the event of us being the sender of the transaction.
-	pkScript := txDetail.TxRecord.MsgTx.TxOut[prevOut.Index].PkScript
-	if _, err := b.fetchOutputAddr(pkScript); err != nil {
-		return nil, err
-	}
-
-	// Then, we'll populate all of the information required by the struct.
-	addressType := lnwallet.UnknownAddressType
-	switch {
-	case txscript.IsPayToWitnessPubKeyHash(pkScript):
-		addressType = lnwallet.WitnessPubKey
-	case txscript.IsPayToScriptHash(pkScript):
-		addressType = lnwallet.NestedWitnessPubKey
-	}
-
-	// Determine the number of confirmations the output currently has.
-	_, currentHeight, err := b.GetBestBlock()
-	if err != nil {
-		return nil, fmt.Errorf("unable to retrieve current height: %v",
-			err)
-	}
-	confs := int64(0)
-	if txDetail.Block.Height != -1 {
-		confs = int64(currentHeight - txDetail.Block.Height)
-	}
-
-	return &lnwallet.Utxo{
-		AddressType: addressType,
-		Value: btcutil.Amount(
-			txDetail.TxRecord.MsgTx.TxOut[prevOut.Index].Value,
-		),
-		PkScript:      pkScript,
-		Confirmations: confs,
-		OutPoint:      *prevOut,
-	}, nil
 }
 
 // fetchOutputAddr attempts to fetch the managed address corresponding to the
@@ -244,37 +191,6 @@ func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 		serializers.SerializeMsgTx(tx),
 		serializers.SerializeSignDescriptor(signDesc),
 	)
-
-	witnessScript := signDesc.WitnessScript
-
-	// First attempt to fetch the private key which corresponds to the
-	// specified public key.
-	privKey, err := b.fetchPrivKey(&signDesc.KeyDesc)
-	if err != nil {
-		return nil, err
-	}
-
-	// If a tweak (single or double) is specified, then we'll need to use
-	// this tweak to derive the final private key to be used for signing
-	// this output.
-	privKey, err = maybeTweakPrivKey(signDesc, privKey)
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO(roasbeef): generate sighash midstate if not present?
-
-	amt := signDesc.Output.Value
-	sig, err := txscript.RawTxInWitnessSignature(
-		tx, signDesc.SigHashes, signDesc.InputIndex, amt,
-		witnessScript, signDesc.HashType, privKey,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Chop off the sighash flag at the end of the signature.
-	return sig[:len(sig)-1], nil
 }
 
 // ComputeInputScript generates a complete InputScript for the passed
@@ -298,84 +214,6 @@ func (b *BtcWallet) ComputeInputScript(tx *wire.MsgTx,
 		Witness:   computeInputScriptResponse.Witness,
 		SigScript: computeInputScriptResponse.SignatureScript,
 	}, nil
-
-	outputScript := signDesc.Output.PkScript
-	walletAddr, err := b.fetchOutputAddr(outputScript)
-	if err != nil {
-		return nil, err
-	}
-
-	pka := walletAddr.(waddrmgr.ManagedPubKeyAddress)
-	privKey, err := pka.PrivKey()
-	if err != nil {
-		return nil, err
-	}
-
-	var witnessProgram []byte
-	inputScript := &input.Script{}
-
-	switch {
-
-	// If we're spending p2wkh output nested within a p2sh output, then
-	// we'll need to attach a sigScript in addition to witness data.
-	case pka.AddrType() == waddrmgr.NestedWitnessPubKey:
-		pubKey := privKey.PubKey()
-		pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
-
-		// Next, we'll generate a valid sigScript that will allow us to
-		// spend the p2sh output. The sigScript will contain only a
-		// single push of the p2wkh witness program corresponding to
-		// the matching public key of this address.
-		p2wkhAddr, err := btcutil.NewAddressWitnessPubKeyHash(
-			pubKeyHash, b.netParams,
-		)
-		if err != nil {
-			return nil, err
-		}
-		witnessProgram, err = txscript.PayToAddrScript(p2wkhAddr)
-		if err != nil {
-			return nil, err
-		}
-
-		bldr := txscript.NewScriptBuilder()
-		bldr.AddData(witnessProgram)
-		sigScript, err := bldr.Script()
-		if err != nil {
-			return nil, err
-		}
-
-		inputScript.SigScript = sigScript
-
-	// Otherwise, this is a regular p2wkh output, so we include the
-	// witness program itself as the subscript to generate the proper
-	// sighash digest. As part of the new sighash digest algorithm, the
-	// p2wkh witness program will be expanded into a regular p2kh
-	// script.
-	default:
-		witnessProgram = outputScript
-	}
-
-	// If a tweak (single or double) is specified, then we'll need to use
-	// this tweak to derive the final private key to be used for signing
-	// this output.
-	privKey, err = maybeTweakPrivKey(signDesc, privKey)
-	if err != nil {
-		return nil, err
-	}
-
-	// Generate a valid witness stack for the input.
-	// TODO(roasbeef): adhere to passed HashType
-	witnessScript, err := txscript.WitnessSignature(tx, signDesc.SigHashes,
-		signDesc.InputIndex, signDesc.Output.Value, witnessProgram,
-		signDesc.HashType, privKey, true,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	inputScript.Witness = witnessScript
-
-	return inputScript, nil
 }
 
 // A compile time check to ensure that BtcWallet implements the Signer
@@ -391,24 +229,6 @@ var _ input.Signer = (*BtcWallet)(nil)
 func (b *BtcWallet) SignMessage(pubKey *btcec.PublicKey,
 	msg []byte) (*btcec.Signature, error) {
 	return pine.SignMessage(pubKey, msg)
-
-	// First attempt to fetch the private key which corresponds to the
-	// specified public key.
-	privKey, err := b.fetchPrivKey(&keychain.KeyDescriptor{
-		PubKey: pubKey,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Double hash and sign the data.
-	msgDigest := chainhash.DoubleHashB(msg)
-	sign, err := privKey.Sign(msgDigest)
-	if err != nil {
-		return nil, errors.Errorf("unable sign the message: %v", err)
-	}
-
-	return sign, nil
 }
 
 // A compile time check to ensure that BtcWallet implements the MessageSigner

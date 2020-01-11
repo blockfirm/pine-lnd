@@ -236,22 +236,6 @@ func (b *BtcWallet) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
 // This is a part of the WalletController interface.
 func (b *BtcWallet) NewAddress(t lnwallet.AddressType, change bool) (btcutil.Address, error) {
 	return pine.NewAddress(uint8(t), change, b.netParams)
-	var keyScope waddrmgr.KeyScope
-
-	switch t {
-	case lnwallet.WitnessPubKey:
-		keyScope = waddrmgr.KeyScopeBIP0084
-	case lnwallet.NestedWitnessPubKey:
-		keyScope = waddrmgr.KeyScopeBIP0049Plus
-	default:
-		return nil, fmt.Errorf("unknown address type")
-	}
-
-	if change {
-		return b.wallet.NewChangeAddress(defaultAccount, keyScope)
-	}
-
-	return b.wallet.NewAddress(defaultAccount, keyScope)
 }
 
 // LastUnusedAddress returns the last *unused* address known by the wallet. An
@@ -350,7 +334,6 @@ func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
 // This is a part of the WalletController interface.
 func (b *BtcWallet) LockOutpoint(o wire.OutPoint) {
 	pine.LockOutpoint(o)
-	b.wallet.LockOutpoint(o)
 }
 
 // UnlockOutpoint unlocks a previously locked output, marking it eligible for
@@ -359,7 +342,6 @@ func (b *BtcWallet) LockOutpoint(o wire.OutPoint) {
 // This is a part of the WalletController interface.
 func (b *BtcWallet) UnlockOutpoint(o wire.OutPoint) {
 	pine.UnlockOutpoint(o)
-	b.wallet.UnlockOutpoint(o)
 }
 
 // ListUnspentWitness returns a slice of all the unspent outputs the wallet
@@ -386,63 +368,6 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 	}
 
 	return unspentOutputs, nil
-	/*
-		// First, grab all the unfiltered currently unspent outputs.
-		unspentOutputs, err := b.wallet.ListUnspent(minConfs, maxConfs, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		// Next, we'll run through all the regular outputs, only saving those
-		// which are p2wkh outputs or a p2wsh output nested within a p2sh output.
-		witnessOutputs := make([]*lnwallet.Utxo, 0, len(unspentOutputs))
-		for _, output := range unspentOutputs {
-			pkScript, err := hex.DecodeString(output.ScriptPubKey)
-			if err != nil {
-				return nil, err
-			}
-
-			addressType := lnwallet.UnknownAddressType
-			if txscript.IsPayToWitnessPubKeyHash(pkScript) {
-				addressType = lnwallet.WitnessPubKey
-			} else if txscript.IsPayToScriptHash(pkScript) {
-				// TODO(roasbeef): This assumes all p2sh outputs returned by the
-				// wallet are nested p2pkh. We can't check the redeem script because
-				// the btcwallet service does not include it.
-				addressType = lnwallet.NestedWitnessPubKey
-			}
-
-			if addressType == lnwallet.WitnessPubKey ||
-				addressType == lnwallet.NestedWitnessPubKey {
-
-				txid, err := chainhash.NewHashFromStr(output.TxID)
-				if err != nil {
-					return nil, err
-				}
-
-				// We'll ensure we properly convert the amount given in
-				// BTC to satoshis.
-				amt, err := btcutil.NewAmount(output.Amount)
-				if err != nil {
-					return nil, err
-				}
-
-				utxo := &lnwallet.Utxo{
-					AddressType: addressType,
-					Value:       amt,
-					PkScript:    pkScript,
-					OutPoint: wire.OutPoint{
-						Hash:  *txid,
-						Index: output.Vout,
-					},
-					Confirmations: output.Confirmations,
-				}
-				witnessOutputs = append(witnessOutputs, utxo)
-			}
-
-		}
-
-		return witnessOutputs, nil*/
 }
 
 // PublishTransaction performs cursory validation (dust checks, etc), then

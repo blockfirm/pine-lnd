@@ -164,57 +164,6 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 		PubKey:     pubKey,
 		KeyLocator: keyLoc,
 	}, nil
-
-	/*db := b.wallet.Database()
-	err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
-		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
-
-		scope, err := b.keyScope()
-		if err != nil {
-			return err
-		}
-
-		// If the account doesn't exist, then we may need to create it
-		// for the first time in order to derive the keys that we
-		// require.
-		err = b.createAccountIfNotExists(addrmgrNs, keyFam, scope)
-		if err != nil {
-			return err
-		}
-
-		addrs, err := scope.NextExternalAddresses(
-			addrmgrNs, uint32(keyFam), 1,
-		)
-		if err != nil {
-			return err
-		}
-
-		// Extract the first address, ensuring that it is of the proper
-		// interface type, otherwise we can't manipulate it below.
-		addr, ok := addrs[0].(waddrmgr.ManagedPubKeyAddress)
-		if !ok {
-			return fmt.Errorf("address is not a managed pubkey " +
-				"addr")
-		}
-
-		pubKey = addr.PubKey()
-
-		_, pathInfo, _ := addr.DerivationInfo()
-		keyLoc = KeyLocator{
-			Family: keyFam,
-			Index:  pathInfo.Index,
-		}
-
-		return nil
-	})
-	if err != nil {
-		return KeyDescriptor{}, err
-	}
-
-	return KeyDescriptor{
-		PubKey:     pubKey,
-		KeyLocator: keyLoc,
-	}, nil*/
 }
 
 // DeriveKey attempts to derive an arbitrary key specified by the passed
@@ -242,44 +191,6 @@ func (b *BtcWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error) {
 		PubKey:     pubKey,
 		KeyLocator: keyLoc,
 	}, nil
-
-	/*db := b.wallet.Database()
-	err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
-		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
-
-		scope, err := b.keyScope()
-		if err != nil {
-			return err
-		}
-
-		// If the account doesn't exist, then we may need to create it
-		// for the first time in order to derive the keys that we
-		// require.
-		err = b.createAccountIfNotExists(addrmgrNs, keyLoc.Family, scope)
-		if err != nil {
-			return err
-		}
-
-		path := waddrmgr.DerivationPath{
-			Account: uint32(keyLoc.Family),
-			Branch:  0,
-			Index:   uint32(keyLoc.Index),
-		}
-		addr, err := scope.DeriveFromKeyPath(addrmgrNs, path)
-		if err != nil {
-			return err
-		}
-
-		keyDesc.KeyLocator = keyLoc
-		keyDesc.PubKey = addr.(waddrmgr.ManagedPubKeyAddress).PubKey()
-
-		return nil
-	})
-	if err != nil {
-		return keyDesc, err
-	}
-
-	return keyDesc, nil*/
 }
 
 // DerivePrivKey attempts to derive the private key that corresponds to the

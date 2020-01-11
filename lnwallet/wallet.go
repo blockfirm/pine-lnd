@@ -686,16 +686,6 @@ func (l *LightningWallet) initOurContribution(reservation *ChannelReservation,
 
 	// With the above keys created, we'll also need to initialization our
 	// initial revocation tree state.
-	/*nextRevocationKeyDesc, err := l.DeriveNextKey(
-		keychain.KeyFamilyRevocationRoot,
-	)
-	if err != nil {
-		return err
-	}
-	revocationRoot, err := l.DerivePrivKey(nextRevocationKeyDesc)
-	if err != nil {
-		return err
-	}*/
 	revocationRoot, err := pine.GetRevocationRootKey()
 	if err != nil {
 		return err
