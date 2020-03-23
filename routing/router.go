@@ -11,12 +11,13 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
 
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -302,6 +303,9 @@ type Config struct {
 
 	// PathFindingConfig defines global path finding parameters.
 	PathFindingConfig PathFindingConfig
+
+	// Clock is mockable time provider.
+	Clock clock.Clock
 }
 
 // EdgeLocator is a struct used to identify a specific edge.
@@ -537,7 +541,14 @@ func (r *ChannelRouter) Start() error {
 				PaymentHash: payment.Info.PaymentHash,
 			}
 
-			_, _, err := r.sendPayment(payment.Attempt, lPayment, paySession)
+			// TODO(joostjager): For mpp, possibly relaunch multiple
+			// in-flight htlcs here.
+			var attempt *channeldb.HTLCAttemptInfo
+			if len(payment.Attempts) > 0 {
+				attempt = &payment.Attempts[0]
+			}
+
+			_, _, err := r.sendPayment(attempt, lPayment, paySession)
 			if err != nil {
 				log.Errorf("Resuming payment with hash %v "+
 					"failed: %v.", payment.Info.PaymentHash, err)
@@ -1402,25 +1413,10 @@ type routingMsg struct {
 func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 	amt lnwire.MilliSatoshi, restrictions *RestrictParams,
 	destCustomRecords record.CustomSet,
-	finalExpiry ...uint16) (*route.Route, error) {
-
-	var finalCLTVDelta uint16
-	if len(finalExpiry) == 0 {
-		finalCLTVDelta = zpay32.DefaultFinalCLTVDelta
-	} else {
-		finalCLTVDelta = finalExpiry[0]
-	}
+	routeHints map[route.Vertex][]*channeldb.ChannelEdgePolicy,
+	finalExpiry uint16) (*route.Route, error) {
 
 	log.Debugf("Searching for path to %v, sending %v", target, amt)
-
-	// We can short circuit the routing by opportunistically checking to
-	// see if the target vertex event exists in the current graph.
-	if _, exists, err := r.cfg.Graph.HasLightningNode(target); err != nil {
-		return nil, err
-	} else if !exists {
-		log.Debugf("Target %x is not in known graph", target)
-		return nil, newErrf(ErrTargetNotInNetwork, "target not found")
-	}
 
 	// We'll attempt to obtain a set of bandwidth hints that can help us
 	// eliminate certain routes early on in the path finding process.
@@ -1440,12 +1436,13 @@ func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 
 	// Now that we know the destination is reachable within the graph, we'll
 	// execute our path finding algorithm.
-	finalHtlcExpiry := currentHeight + int32(finalCLTVDelta)
+	finalHtlcExpiry := currentHeight + int32(finalExpiry)
 
 	path, err := findPath(
 		&graphParams{
-			graph:          r.cfg.Graph,
-			bandwidthHints: bandwidthHints,
+			graph:           r.cfg.Graph,
+			bandwidthHints:  bandwidthHints,
+			additionalEdges: routeHints,
 		},
 		restrictions, &r.cfg.PathFindingConfig,
 		source, target, amt, finalHtlcExpiry,
@@ -1459,7 +1456,7 @@ func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 		source, path, uint32(currentHeight),
 		finalHopParams{
 			amt:       amt,
-			cltvDelta: finalCLTVDelta,
+			cltvDelta: finalExpiry,
 			records:   destCustomRecords,
 		},
 	)
@@ -1694,7 +1691,7 @@ func (r *ChannelRouter) preparePayment(payment *LightningPayment) (
 	info := &channeldb.PaymentCreationInfo{
 		PaymentHash:    payment.PaymentHash,
 		Value:          payment.Amount,
-		CreationDate:   time.Now(),
+		CreationTime:   r.cfg.Clock.Now(),
 		PaymentRequest: payment.PaymentRequest,
 	}
 
@@ -1723,7 +1720,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 	info := &channeldb.PaymentCreationInfo{
 		PaymentHash:    hash,
 		Value:          amt,
-		CreationDate:   time.Now(),
+		CreationTime:   r.cfg.Clock.Now(),
 		PaymentRequest: nil,
 	}
 
@@ -1782,7 +1779,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
 func (r *ChannelRouter) sendPayment(
-	existingAttempt *channeldb.PaymentAttemptInfo,
+	existingAttempt *channeldb.HTLCAttemptInfo,
 	payment *LightningPayment, paySession PaymentSession) (
 	[32]byte, *route.Route, error) {
 
@@ -1910,18 +1907,33 @@ func (r *ChannelRouter) processSendError(paymentID uint64, rt *route.Route,
 
 		return reportFail(nil, nil)
 	}
-	// If an internal, non-forwarding error occurred, we can stop
-	// trying.
-	fErr, ok := sendErr.(*htlcswitch.ForwardingError)
+
+	// If the error is a ClearTextError, we have received a valid wire
+	// failure message, either from our own outgoing link or from a node
+	// down the route. If the error is not related to the propagation of
+	// our payment, we can stop trying because an internal error has
+	// occurred.
+	rtErr, ok := sendErr.(htlcswitch.ClearTextError)
 	if !ok {
 		return &internalErrorReason
 	}
 
-	failureMessage := fErr.FailureMessage
-	failureSourceIdx := fErr.FailureSourceIdx
+	// failureSourceIdx is the index of the node that the failure occurred
+	// at. If the ClearTextError received is not a ForwardingError the
+	// payment error occurred at our node, so we leave this value as 0
+	// to indicate that the failure occurred locally. If the error is a
+	// ForwardingError, it did not originate at our node, so we set
+	// failureSourceIdx to the index of the node where the failure occurred.
+	failureSourceIdx := 0
+	source, ok := rtErr.(*htlcswitch.ForwardingError)
+	if ok {
+		failureSourceIdx = source.FailureSourceIdx
+	}
 
-	// Apply channel update if the error contains one. For unknown
-	// failures, failureMessage is nil.
+	// Extract the wire failure and apply channel update if it contains one.
+	// If we received an unknown failure message from a node along the
+	// route, the failure message will be nil.
+	failureMessage := rtErr.WireMessage()
 	if failureMessage != nil {
 		err := r.tryApplyChannelUpdate(
 			rt, failureSourceIdx, failureMessage,
@@ -2099,7 +2111,7 @@ func (r *ChannelRouter) FetchLightningNode(node route.Vertex) (*channeldb.Lightn
 //
 // NOTE: This method is part of the ChannelGraphSource interface.
 func (r *ChannelRouter) ForEachNode(cb func(*channeldb.LightningNode) error) error {
-	return r.cfg.Graph.ForEachNode(nil, func(_ *bbolt.Tx, n *channeldb.LightningNode) error {
+	return r.cfg.Graph.ForEachNode(nil, func(_ kvdb.ReadTx, n *channeldb.LightningNode) error {
 		return cb(n)
 	})
 }
@@ -2111,7 +2123,7 @@ func (r *ChannelRouter) ForEachNode(cb func(*channeldb.LightningNode) error) err
 func (r *ChannelRouter) ForAllOutgoingChannels(cb func(*channeldb.ChannelEdgeInfo,
 	*channeldb.ChannelEdgePolicy) error) error {
 
-	return r.selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, c *channeldb.ChannelEdgeInfo,
+	return r.selfNode.ForEachChannel(nil, func(_ kvdb.ReadTx, c *channeldb.ChannelEdgeInfo,
 		e, _ *channeldb.ChannelEdgePolicy) error {
 
 		if e == nil {
@@ -2252,7 +2264,7 @@ func generateBandwidthHints(sourceNode *channeldb.LightningNode,
 	// First, we'll collect the set of outbound edges from the target
 	// source node.
 	var localChans []*channeldb.ChannelEdgeInfo
-	err := sourceNode.ForEachChannel(nil, func(tx *bbolt.Tx,
+	err := sourceNode.ForEachChannel(nil, func(tx kvdb.ReadTx,
 		edgeInfo *channeldb.ChannelEdgeInfo,
 		_, _ *channeldb.ChannelEdgePolicy) error {
 
@@ -2310,6 +2322,13 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 		return nil, err
 	}
 
+	// Fetch the current block height outside the routing transaction, to
+	// prevent the rpc call blocking the database.
+	_, height, err := r.cfg.Chain.GetBestBlock()
+	if err != nil {
+		return nil, err
+	}
+
 	// Allocate a list that will contain the unified policies for this
 	// route.
 	edges := make([]*unifiedPolicy, len(hops))
@@ -2326,6 +2345,18 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 		// delivers exactly this amount to the final destination.
 		runningAmt = *amt
 	}
+
+	// Open a transaction to execute the graph queries in.
+	routingTx, err := newDbRoutingTx(r.cfg.Graph)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		err := routingTx.close()
+		if err != nil {
+			log.Errorf("Error closing db tx: %v", err)
+		}
+	}()
 
 	// Traverse hops backwards to accumulate fees in the running amounts.
 	source := r.selfNode.PubKeyBytes
@@ -2345,7 +2376,7 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 		// known in the graph.
 		u := newUnifiedPolicies(source, toNode, outgoingChan)
 
-		err := u.addGraphPolicies(r.cfg.Graph, nil)
+		err := u.addGraphPolicies(routingTx)
 		if err != nil {
 			return nil, err
 		}
@@ -2413,11 +2444,6 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 	}
 
 	// Build and return the final route.
-	_, height, err := r.cfg.Chain.GetBestBlock()
-	if err != nil {
-		return nil, err
-	}
-
 	return newRoute(
 		source, pathEdges, uint32(height),
 		finalHopParams{

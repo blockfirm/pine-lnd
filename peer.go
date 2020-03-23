@@ -28,6 +28,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/pool"
+	"github.com/lightningnetwork/lnd/queue"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -52,6 +53,9 @@ const (
 	// messages to be sent across the wire, requested by objects outside
 	// this struct.
 	outgoingQueueLen = 50
+
+	// errorBufferSize is the number of historic peer errors that we store.
+	errorBufferSize = 10
 )
 
 // outgoingMsg packages an lnwire.Message to be sent out on the wire, along with
@@ -89,6 +93,13 @@ type pendingUpdate struct {
 type channelCloseUpdate struct {
 	ClosingTxid []byte
 	Success     bool
+}
+
+// timestampedError is a timestamped error that is used to store the most recent
+// errors we have experienced with our peers.
+type timestampedError struct {
+	error     error
+	timestamp time.Time
 }
 
 // peer is an active peer on the Lightning Network. This struct is responsible
@@ -210,13 +221,19 @@ type peer struct {
 	// the connection handshake.
 	remoteFeatures *lnwire.FeatureVector
 
-	// failedChannels is a set that tracks channels we consider `failed`.
-	// This is a temporary measure until we have implemented real failure
-	// handling at the link level, to handle the case where we reconnect to
-	// a peer and try to re-sync a failed channel, triggering a disconnect
-	// loop.
-	// TODO(halseth): remove when link failure is properly handled.
-	failedChannels map[lnwire.ChannelID]struct{}
+	// resentChanSyncMsg is a set that keeps track of which channels we
+	// have re-sent channel reestablishment messages for. This is done to
+	// avoid getting into loop where both peers will respond to the other
+	// peer's chansync message with its own over and over again.
+	resentChanSyncMsg map[lnwire.ChannelID]struct{}
+
+	// errorBuffer stores a set of errors related to a peer. It contains
+	// error messages that our peer has recently sent us over the wire and
+	// records of unknown messages that were sent to us and, so that we can
+	// track a full record of the communication errors we have had with our
+	// peer. If we choose to disconnect from a peer, it also stores the
+	// reason we had for disconnecting.
+	errorBuffer *queue.CircularBuffer
 
 	// writePool is the task pool to that manages reuse of write buffers.
 	// Write tasks are submitted to the pool in order to conserve the total
@@ -235,12 +252,15 @@ type peer struct {
 var _ lnpeer.Peer = (*peer)(nil)
 
 // newPeer creates a new peer from an establish connection object, and a
-// pointer to the main server.
+// pointer to the main server. It takes an error buffer which may contain errors
+// from a previous connection with the peer if we have been connected to them
+// before.
 func newPeer(conn net.Conn, connReq *connmgr.ConnReq, server *server,
 	addr *lnwire.NetAddress, inbound bool,
 	features, legacyFeatures *lnwire.FeatureVector,
 	chanActiveTimeout time.Duration,
-	outgoingCltvRejectDelta uint32) (
+	outgoingCltvRejectDelta uint32,
+	errBuffer *queue.CircularBuffer) (
 	*peer, error) {
 
 	nodePub := addr.IdentityKey
@@ -274,9 +294,11 @@ func newPeer(conn net.Conn, connReq *connmgr.ConnReq, server *server,
 		localCloseChanReqs: make(chan *htlcswitch.ChanClose),
 		linkFailures:       make(chan linkFailureReport),
 		chanCloseMsgs:      make(chan *closeMsg),
-		failedChannels:     make(map[lnwire.ChannelID]struct{}),
+		resentChanSyncMsg:  make(map[lnwire.ChannelID]struct{}),
 
 		chanActiveTimeout: chanActiveTimeout,
+
+		errorBuffer: errBuffer,
 
 		writePool: server.writePool,
 		readPool:  server.readPool,
@@ -340,6 +362,7 @@ func (p *peer) Start() error {
 	msg := <-msgChan
 	if msg, ok := msg.(*lnwire.Init); ok {
 		if err := p.handleInitMsg(msg); err != nil {
+			p.storeError(err)
 			return err
 		}
 	} else {
@@ -488,14 +511,6 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) (
 			continue
 		}
 
-		// Also skip adding any channel marked as `failed` for this
-		// session.
-		if _, ok := p.failedChannels[chanID]; ok {
-			peerLog.Warnf("ChannelPoint(%v) is failed, won't "+
-				"start.", chanPoint)
-			continue
-		}
-
 		_, currentHeight, err := p.server.cc.chainIO.GetBestBlock()
 		if err != nil {
 			return nil, err
@@ -636,6 +651,7 @@ func (p *peer) addLink(chanPoint *wire.OutPoint,
 		MaxFeeAllocation:        cfg.MaxChannelFeeAllocation,
 		NotifyActiveChannel:     p.server.channelNotifier.NotifyActiveChannelEvent,
 		NotifyInactiveChannel:   p.server.channelNotifier.NotifyInactiveChannelEvent,
+		HtlcNotifier:            p.server.htlcNotifier,
 	}
 
 	link := htlcswitch.NewChannelLink(linkCfg, lnChan)
@@ -677,7 +693,10 @@ func (p *peer) Disconnect(reason error) {
 		return
 	}
 
-	peerLog.Infof("Disconnecting %s, reason: %v", p, reason)
+	err := fmt.Errorf("disconnecting %s, reason: %v", p, reason)
+	p.storeError(err)
+
+	peerLog.Infof(err.Error())
 
 	// Ensure that the TCP connection is properly closed before continuing.
 	p.conn.Close()
@@ -1035,12 +1054,17 @@ out:
 			peerLog.Infof("unable to read message from %v: %v",
 				p, err)
 
-			switch err.(type) {
+			// If we could not read our peer's message due to an
+			// unknown type or invalid alias, we continue processing
+			// as normal. We store unknown message and address
+			// types, as they may provide debugging insight.
+			switch e := err.(type) {
 			// If this is just a message we don't yet recognize,
 			// we'll continue processing as normal as this allows
 			// us to introduce new messages in a forwards
 			// compatible manner.
 			case *lnwire.UnknownMessage:
+				p.storeError(e)
 				idleTimer.Reset(idleTimeout)
 				continue
 
@@ -1049,12 +1073,15 @@ out:
 			// simply continue parsing the remainder of their
 			// messages.
 			case *lnwire.ErrUnknownAddrType:
+				p.storeError(e)
 				idleTimer.Reset(idleTimeout)
 				continue
 
 			// If the NodeAnnouncement has an invalid alias, then
 			// we'll log that error above and continue so we can
-			// continue to read messges from the peer.
+			// continue to read messages from the peer. We do not
+			// store this error because it is of little debugging
+			// value.
 			case *lnwire.ErrInvalidNodeAlias:
 				idleTimer.Reset(idleTimeout)
 				continue
@@ -1150,8 +1177,13 @@ out:
 			discStream.AddMsg(msg)
 
 		default:
-			peerLog.Errorf("unknown message %v received from peer "+
-				"%v", uint16(msg.MsgType()), p)
+			// If the message we received is unknown to us, store
+			// the type to track the failure.
+			err := fmt.Errorf("unknown message type %v received",
+				uint16(msg.MsgType()))
+			p.storeError(err)
+
+			peerLog.Errorf("peer: %v, %v", p, err)
 		}
 
 		if isLinkUpdate {
@@ -1190,24 +1222,46 @@ func (p *peer) isActiveChannel(chanID lnwire.ChannelID) bool {
 	return ok
 }
 
+// storeError stores an error in our peer's buffer of recent errors with the
+// current timestamp. Errors are only stored if we have at least one active
+// channel with the peer to mitigate dos attack vectors where a peer costlessly
+// connects to us and spams us with errors.
+func (p *peer) storeError(err error) {
+	p.activeChanMtx.RLock()
+	channelCount := len(p.activeChannels)
+	p.activeChanMtx.RUnlock()
+
+	// If we do not have any active channels with the peer, we do not store
+	// errors as a dos mitigation.
+	if channelCount == 0 {
+		peerLog.Tracef("no channels with peer: %v, not storing err", p)
+		return
+	}
+
+	p.errorBuffer.Add(
+		&timestampedError{timestamp: time.Now(), error: err},
+	)
+}
+
 // handleError processes an error message read from the remote peer. The boolean
 // returns indicates whether the message should be delivered to a targeted peer.
+// It stores the error we received from the peer in memory if we have a channel
+// open with the peer.
 //
 // NOTE: This method should only be called from within the readHandler.
 func (p *peer) handleError(msg *lnwire.Error) bool {
 	key := p.addr.IdentityKey
+
+	// Store the error we have received.
+	p.storeError(msg)
 
 	switch {
 
 	// In the case of an all-zero channel ID we want to forward the error to
 	// all channels with this peer.
 	case msg.ChanID == lnwire.ConnectionWideID:
-		for chanID, chanStream := range p.activeMsgStreams {
+		for _, chanStream := range p.activeMsgStreams {
 			chanStream.AddMsg(msg)
-
-			// Also marked this channel as failed, so we won't try
-			// to restart it on reconnect with this peer.
-			p.failedChannels[chanID] = struct{}{}
 		}
 		return false
 
@@ -1219,9 +1273,6 @@ func (p *peer) handleError(msg *lnwire.Error) bool {
 
 	// If not we hand the error to the channel link for this channel.
 	case p.isActiveChannel(msg.ChanID):
-		// Mark this channel as failed, so we won't try to restart it on
-		// reconnect with this peer.
-		p.failedChannels[msg.ChanID] = struct{}{}
 		return true
 
 	default:
@@ -2118,6 +2169,7 @@ func (p *peer) fetchActiveChanCloser(chanID lnwire.ChannelID) (*channelCloser, e
 			feePerKw,
 			uint32(startingHeight),
 			nil,
+			false,
 		)
 		p.activeChanCloses[chanID] = chanCloser
 	}
@@ -2230,6 +2282,7 @@ func (p *peer) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 			req.TargetFeePerKw,
 			uint32(startingHeight),
 			req,
+			true,
 		)
 		p.activeChanCloses[chanID] = chanCloser
 
@@ -2527,6 +2580,12 @@ func (p *peer) sendInitMsg() error {
 // resendChanSyncMsg will attempt to find a channel sync message for the closed
 // channel and resend it to our peer.
 func (p *peer) resendChanSyncMsg(cid lnwire.ChannelID) error {
+	// If we already re-sent the mssage for this channel, we won't do it
+	// again.
+	if _, ok := p.resentChanSyncMsg[cid]; ok {
+		return nil
+	}
+
 	// Check if we have any channel sync messages stored for this channel.
 	c, err := p.server.chanDB.FetchClosedChannelForID(cid)
 	if err != nil {
@@ -2554,6 +2613,10 @@ func (p *peer) resendChanSyncMsg(cid lnwire.ChannelID) error {
 
 	peerLog.Debugf("Re-sent channel sync message for channel %v to peer "+
 		"%v", cid, p)
+
+	// Note down that we sent the message, so we won't resend it again for
+	// this connection.
+	p.resentChanSyncMsg[cid] = struct{}{}
 
 	return nil
 }

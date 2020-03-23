@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -173,7 +173,7 @@ type paymentResult struct {
 }
 
 // NewMissionControl returns a new instance of missionControl.
-func NewMissionControl(db *bbolt.DB, cfg *MissionControlConfig) (
+func NewMissionControl(db kvdb.Backend, cfg *MissionControlConfig) (
 	*MissionControl, error) {
 
 	log.Debugf("Instantiating mission control with config: "+
@@ -333,18 +333,18 @@ func (m *MissionControl) setLastPairResult(fromNode, toNode route.Vertex,
 	nodePairs[toNode] = current
 }
 
-// setAllFail stores a fail result for all known connection of the given node.
-func (m *MissionControl) setAllFail(fromNode route.Vertex,
+// setAllFail stores a fail result for all known connections to and from the
+// given node.
+func (m *MissionControl) setAllFail(node route.Vertex,
 	timestamp time.Time) {
 
-	nodePairs, ok := m.lastPairResult[fromNode]
-	if !ok {
-		return
-	}
-
-	for connection := range nodePairs {
-		nodePairs[connection] = TimedPairResult{
-			FailTime: timestamp,
+	for fromNode, nodePairs := range m.lastPairResult {
+		for toNode := range nodePairs {
+			if fromNode == node || toNode == node {
+				nodePairs[toNode] = TimedPairResult{
+					FailTime: timestamp,
+				}
+			}
 		}
 	}
 }

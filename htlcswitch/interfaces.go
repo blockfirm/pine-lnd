@@ -27,7 +27,7 @@ type InvoiceDatabase interface {
 	NotifyExitHopHtlc(payHash lntypes.Hash, paidAmount lnwire.MilliSatoshi,
 		expiry uint32, currentHeight int32,
 		circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
-		payload invoices.Payload) (*invoices.HtlcResolution, error)
+		payload invoices.Payload) (invoices.HtlcResolution, error)
 
 	// CancelInvoice attempts to cancel the invoice corresponding to the
 	// passed payment hash.
@@ -102,20 +102,21 @@ type ChannelLink interface {
 
 	// CheckHtlcForward should return a nil error if the passed HTLC details
 	// satisfy the current forwarding policy fo the target link. Otherwise,
-	// a valid protocol failure message should be returned in order to
-	// signal to the source of the HTLC, the policy consistency issue.
+	// a LinkError with a valid protocol failure message should be returned
+	// in order to signal to the source of the HTLC, the policy consistency
+	// issue.
 	CheckHtlcForward(payHash [32]byte, incomingAmt lnwire.MilliSatoshi,
 		amtToForward lnwire.MilliSatoshi,
 		incomingTimeout, outgoingTimeout uint32,
-		heightNow uint32) lnwire.FailureMessage
+		heightNow uint32) *LinkError
 
 	// CheckHtlcTransit should return a nil error if the passed HTLC details
-	// satisfy the current channel policy.  Otherwise, a valid protocol
-	// failure message should be returned in order to signal the violation.
-	// This call is intended to be used for locally initiated payments for
-	// which there is no corresponding incoming htlc.
+	// satisfy the current channel policy.  Otherwise, a LinkError with a
+	// valid protocol failure message should be returned in order to signal
+	// the violation. This call is intended to be used for locally initiated
+	// payments for which there is no corresponding incoming htlc.
 	CheckHtlcTransit(payHash [32]byte, amt lnwire.MilliSatoshi,
-		timeout uint32, heightNow uint32) lnwire.FailureMessage
+		timeout uint32, heightNow uint32) *LinkError
 
 	// Bandwidth returns the amount of milli-satoshis which current link
 	// might pass through channel link. The value returned from this method
@@ -178,4 +179,30 @@ type TowerClient interface {
 	// up doesn't have a tweak for the remote party's output, then
 	// isTweakless should be true.
 	BackupState(*lnwire.ChannelID, *lnwallet.BreachRetribution, bool) error
+}
+
+// htlcNotifier is an interface which represents the input side of the
+// HtlcNotifier which htlc events are piped through. This interface is intended
+// to allow for mocking of the htlcNotifier in tests, so is unexported because
+// it is not needed outside of the htlcSwitch package.
+type htlcNotifier interface {
+	// NotifyForwardingEvent notifies the HtlcNotifier than a htlc has been
+	// forwarded.
+	NotifyForwardingEvent(key HtlcKey, info HtlcInfo,
+		eventType HtlcEventType)
+
+	// NotifyIncomingLinkFailEvent notifies that a htlc has failed on our
+	// incoming link. It takes an isReceive bool to differentiate between
+	// our node's receives and forwards.
+	NotifyLinkFailEvent(key HtlcKey, info HtlcInfo,
+		eventType HtlcEventType, linkErr *LinkError, incoming bool)
+
+	// NotifyForwardingFailEvent notifies the HtlcNotifier that a htlc we
+	// forwarded has failed down the line.
+	NotifyForwardingFailEvent(key HtlcKey, eventType HtlcEventType)
+
+	// NotifySettleEvent notifies the HtlcNotifier that a htlc that we
+	// committed to as part of a forward or a receive to our node has been
+	// settled.
+	NotifySettleEvent(key HtlcKey, eventType HtlcEventType)
 }

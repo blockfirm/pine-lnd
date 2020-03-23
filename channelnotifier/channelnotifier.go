@@ -20,6 +20,19 @@ type ChannelNotifier struct {
 	chanDB *channeldb.DB
 }
 
+// PendingOpenChannelEvent represents a new event where a new channel has
+// entered a pending open state.
+type PendingOpenChannelEvent struct {
+	// ChannelPoint is the channel outpoint for the new channel.
+	ChannelPoint *wire.OutPoint
+
+	// PendingChannel is the channel configuration for the newly created
+	// channel. This might not have been persisted to the channel DB yet
+	// because we are still waiting for the final message from the remote
+	// peer.
+	PendingChannel *channeldb.OpenChannel
+}
+
 // OpenChannelEvent represents a new event where a channel goes from pending
 // open to open.
 type OpenChannelEvent struct {
@@ -80,6 +93,24 @@ func (c *ChannelNotifier) Stop() {
 // which we would like to subscribe to events.
 func (c *ChannelNotifier) SubscribeChannelEvents() (*subscribe.Client, error) {
 	return c.ntfnServer.Subscribe()
+}
+
+// NotifyPendingOpenChannelEvent notifies the channelEventNotifier goroutine
+// that a new channel is pending. The pending channel is passed as a parameter
+// instead of read from the database because it might not yet have been
+// persisted to the DB because we still wait for the final message from the
+// remote peer.
+func (c *ChannelNotifier) NotifyPendingOpenChannelEvent(chanPoint wire.OutPoint,
+	pendingChan *channeldb.OpenChannel) {
+
+	event := PendingOpenChannelEvent{
+		ChannelPoint:   &chanPoint,
+		PendingChannel: pendingChan,
+	}
+
+	if err := c.ntfnServer.SendUpdate(event); err != nil {
+		log.Warnf("Unable to send pending open channel update: %v", err)
+	}
 }
 
 // NotifyOpenChannelEvent notifies the channelEventNotifier goroutine that a

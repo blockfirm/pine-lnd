@@ -99,9 +99,9 @@ type InitFundingReserveMsg struct {
 	// output selected to fund the channel should satisfy.
 	MinConfs int32
 
-	// Tweakless indicates if the channel should use the new tweakless
-	// commitment format or not.
-	Tweakless bool
+	// CommitType indicates what type of commitment type the channel should
+	// be using, like tweakless or anchors.
+	CommitType CommitmentType
 
 	// ChanFunder is an optional channel funder that allows the caller to
 	// control exactly how the channel funding is carried out. If not
@@ -569,7 +569,7 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 	reservation, err := NewChannelReservation(
 		capacity, localFundingAmt, req.CommitFeePerKw, l, id,
 		req.PushMSat, l.Cfg.NetParams.GenesisHash, req.Flags,
-		req.Tweakless, req.ChanFunder, req.PendingChanID,
+		req.CommitType, req.ChanFunder, req.PendingChanID,
 	)
 	if err != nil {
 		if fundingIntent != nil {
@@ -779,7 +779,7 @@ func CreateCommitmentTxns(localBalance, remoteBalance btcutil.Amount,
 
 	ourCommitTx, err := CreateCommitTx(
 		chanType, fundingTxIn, localCommitmentKeys, ourChanCfg,
-		theirChanCfg, localBalance, remoteBalance,
+		theirChanCfg, localBalance, remoteBalance, 0,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -792,7 +792,7 @@ func CreateCommitmentTxns(localBalance, remoteBalance btcutil.Amount,
 
 	theirCommitTx, err := CreateCommitTx(
 		chanType, fundingTxIn, remoteCommitmentKeys, theirChanCfg,
-		ourChanCfg, remoteBalance, localBalance,
+		ourChanCfg, remoteBalance, localBalance, 0,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -1430,7 +1430,7 @@ func (l *LightningWallet) handleSingleFunderSigs(req *addSingleFunderSigsMsg) {
 
 // WithCoinSelectLock will execute the passed function closure in a
 // synchronized manner preventing any coin selection operations from proceeding
-// while the closure if executing. This can be seen as the ability to execute a
+// while the closure is executing. This can be seen as the ability to execute a
 // function closure under an exclusive coin selection lock.
 func (l *LightningWallet) WithCoinSelectLock(f func() error) error {
 	l.coinSelectMtx.Lock()
