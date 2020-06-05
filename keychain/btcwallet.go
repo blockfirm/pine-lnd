@@ -172,25 +172,69 @@ func (b *BtcWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error
 //
 // NOTE: This is part of the keychain.KeyRing interface.
 func (b *BtcWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error) {
-	keyDescriptor, err := pine.DeriveKey(uint32(keyLoc.Family), keyLoc.Index)
+	// If key family is NOT node identity key, then derive key using Pine.
+	if keyLoc.Family != 6 { // 6 = KeyFamilyNodeKey
+		keyDescriptor, err := pine.DeriveKey(uint32(keyLoc.Family), keyLoc.Index)
+		if err != nil {
+			return KeyDescriptor{}, err
+		}
+
+		pubKey, err := btcec.ParsePubKey(keyDescriptor.PublicKey, btcec.S256())
+		if err != nil {
+			return KeyDescriptor{}, err
+		}
+
+		keyLoc = KeyLocator{
+			Family: KeyFamily(keyDescriptor.KeyLocator.KeyFamily),
+			Index:  keyDescriptor.KeyLocator.Index,
+		}
+
+		return KeyDescriptor{
+			PubKey:     pubKey,
+			KeyLocator: keyLoc,
+		}, nil
+	}
+
+	// If key family is node identity key, then derive key locally.
+	var keyDesc KeyDescriptor
+
+	db := b.wallet.Database()
+	err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
+		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+
+		scope, err := b.keyScope()
+		if err != nil {
+			return err
+		}
+
+		// If the account doesn't exist, then we may need to create it
+		// for the first time in order to derive the keys that we
+		// require.
+		err = b.createAccountIfNotExists(addrmgrNs, keyLoc.Family, scope)
+		if err != nil {
+			return err
+		}
+
+		path := waddrmgr.DerivationPath{
+			Account: uint32(keyLoc.Family),
+			Branch:  0,
+			Index:   uint32(keyLoc.Index),
+		}
+		addr, err := scope.DeriveFromKeyPath(addrmgrNs, path)
+		if err != nil {
+			return err
+		}
+
+		keyDesc.KeyLocator = keyLoc
+		keyDesc.PubKey = addr.(waddrmgr.ManagedPubKeyAddress).PubKey()
+
+		return nil
+	})
 	if err != nil {
-		return KeyDescriptor{}, err
+		return keyDesc, err
 	}
 
-	pubKey, err := btcec.ParsePubKey(keyDescriptor.PublicKey, btcec.S256())
-	if err != nil {
-		return KeyDescriptor{}, err
-	}
-
-	keyLoc = KeyLocator{
-		Family: KeyFamily(keyDescriptor.KeyLocator.KeyFamily),
-		Index:  keyDescriptor.KeyLocator.Index,
-	}
-
-	return KeyDescriptor{
-		PubKey:     pubKey,
-		KeyLocator: keyLoc,
-	}, nil
+	return keyDesc, nil
 }
 
 // DerivePrivKey attempts to derive the private key that corresponds to the
