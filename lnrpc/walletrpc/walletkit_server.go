@@ -16,9 +16,11 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/sweep"
 	"google.golang.org/grpc"
@@ -88,6 +90,14 @@ var (
 			Entity: "onchain",
 			Action: "write",
 		}},
+		"/walletrpc.WalletKit/ListSweeps": {{
+			Entity: "onchain",
+			Action: "read",
+		}},
+		"/walletrpc.WalletKit/LabelTransaction": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
 	}
 
 	// DefaultWalletKitMacFilename is the default name of the wallet kit
@@ -95,6 +105,10 @@ var (
 	// configuration file in this package.
 	DefaultWalletKitMacFilename = "walletkit.macaroon"
 )
+
+// ErrZeroLabel is returned when an attempt is made to label a transaction with
+// an empty label.
+var ErrZeroLabel = errors.New("cannot label transaction with empty label")
 
 // WalletKit is a sub-RPC server that exposes a tool kit which allows clients
 // to execute common wallet operations. This includes requesting new addresses,
@@ -268,7 +282,12 @@ func (w *WalletKit) PublishTransaction(ctx context.Context,
 		return nil, err
 	}
 
-	err := w.cfg.Wallet.PublishTransaction(tx)
+	label, err := labels.ValidateAPI(req.Label)
+	if err != nil {
+		return nil, err
+	}
+
+	err = w.cfg.Wallet.PublishTransaction(tx, label)
 	if err != nil {
 		return nil, err
 	}
@@ -301,10 +320,15 @@ func (w *WalletKit) SendOutputs(ctx context.Context,
 		})
 	}
 
+	label, err := labels.ValidateAPI(req.Label)
+	if err != nil {
+		return nil, err
+	}
+
 	// Now that we have the outputs mapped, we can request that the wallet
 	// attempt to create this transaction.
 	tx, err := w.cfg.Wallet.SendOutputs(
-		outputsToCreate, chainfee.SatPerKWeight(req.SatPerKw),
+		outputsToCreate, chainfee.SatPerKWeight(req.SatPerKw), label,
 	)
 	if err != nil {
 		return nil, err
@@ -554,4 +578,93 @@ func (w *WalletKit) BumpFee(ctx context.Context,
 	}
 
 	return &BumpFeeResponse{}, nil
+}
+
+// ListSweeps returns a list of the sweeps that our node has published.
+func (w *WalletKit) ListSweeps(ctx context.Context,
+	in *ListSweepsRequest) (*ListSweepsResponse, error) {
+
+	sweeps, err := w.cfg.Sweeper.ListSweeps()
+	if err != nil {
+		return nil, err
+	}
+
+	sweepTxns := make(map[string]bool)
+
+	txids := make([]string, len(sweeps))
+	for i, sweep := range sweeps {
+		sweepTxns[sweep.String()] = true
+		txids[i] = sweep.String()
+	}
+
+	// If the caller does not want verbose output, just return the set of
+	// sweep txids.
+	if !in.Verbose {
+		txidResp := &ListSweepsResponse_TransactionIDs{
+			TransactionIds: txids,
+		}
+
+		return &ListSweepsResponse{
+			Sweeps: &ListSweepsResponse_TransactionIds{
+				TransactionIds: txidResp,
+			},
+		}, nil
+	}
+
+	// If the caller does want full transaction lookups, query our wallet
+	// for all transactions, including unconfirmed transactions.
+	transactions, err := w.cfg.Wallet.ListTransactionDetails(
+		0, btcwallet.UnconfirmedHeight,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var sweepTxDetails []*lnwallet.TransactionDetail
+	for _, tx := range transactions {
+		_, ok := sweepTxns[tx.Hash.String()]
+		if !ok {
+			continue
+		}
+
+		sweepTxDetails = append(sweepTxDetails, tx)
+	}
+
+	// Fail if we have not retrieved all of our sweep transactions from the
+	// wallet.
+	if len(sweepTxDetails) != len(txids) {
+		return nil, fmt.Errorf("not all sweeps found by list "+
+			"transactions: %v, %v", len(sweepTxDetails), len(txids))
+	}
+
+	return &ListSweepsResponse{
+		Sweeps: &ListSweepsResponse_TransactionDetails{
+			TransactionDetails: lnrpc.RPCTransactionDetails(transactions),
+		},
+	}, nil
+}
+
+// LabelTransaction adds a label to a transaction.
+func (w *WalletKit) LabelTransaction(ctx context.Context,
+	req *LabelTransactionRequest) (*LabelTransactionResponse, error) {
+
+	// Check that the label provided in non-zero.
+	if len(req.Label) == 0 {
+		return nil, ErrZeroLabel
+	}
+
+	// Validate the length of the non-zero label. We do not need to use the
+	// label returned here, because the original is non-zero so will not
+	// be replaced.
+	if _, err := labels.ValidateAPI(req.Label); err != nil {
+		return nil, err
+	}
+
+	hash, err := chainhash.NewHash(req.Txid)
+	if err != nil {
+		return nil, err
+	}
+
+	err = w.cfg.Wallet.LabelTransaction(*hash, req.Label, req.Overwrite)
+	return &LabelTransactionResponse{}, err
 }

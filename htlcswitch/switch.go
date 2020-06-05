@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -35,6 +37,10 @@ const (
 	// DefaultAckInterval is the duration between attempts to ack any settle
 	// fails in a forwarding package.
 	DefaultAckInterval = 15 * time.Second
+
+	// DefaultHTLCExpiry is the duration after which Adds will be cancelled
+	// if they could not get added to an outgoing commitment.
+	DefaultHTLCExpiry = time.Minute
 )
 
 var (
@@ -61,6 +67,10 @@ var (
 	// ErrUnreadableFailureMessage is returned when the failure message
 	// cannot be decrypted.
 	ErrUnreadableFailureMessage = errors.New("unreadable failure message")
+
+	// ErrLocalAddFailed signals that the ADD htlc for a local payment
+	// failed to be processed.
+	ErrLocalAddFailed = errors.New("local add HTLC failed")
 )
 
 // plexPacket encapsulates switch packet and adds error channel to receive
@@ -173,6 +183,15 @@ type Config struct {
 	// RejectHTLC is a flag that instructs the htlcswitch to reject any
 	// HTLCs that are not from the source hop.
 	RejectHTLC bool
+
+	// Clock is a time source for the switch.
+	Clock clock.Clock
+
+	// HTLCExpiry is the interval after which Adds will be cancelled if they
+	// have not been yet been delivered to a link. The computed deadline
+	// will expiry this long after the Adds are added to a mailbox via
+	// AddPacket.
+	HTLCExpiry time.Duration
 }
 
 // Switch is the central messaging bus for all incoming/outgoing HTLCs.
@@ -282,12 +301,11 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		return nil, err
 	}
 
-	return &Switch{
+	s := &Switch{
 		bestHeight:        currentHeight,
 		cfg:               &cfg,
 		circuits:          circuitMap,
 		linkIndex:         make(map[lnwire.ChannelID]ChannelLink),
-		mailOrchestrator:  newMailOrchestrator(),
 		forwardingIndex:   make(map[lnwire.ShortChannelID]ChannelLink),
 		interfaceIndex:    make(map[[33]byte]map[lnwire.ChannelID]ChannelLink),
 		pendingLinkIndex:  make(map[lnwire.ChannelID]ChannelLink),
@@ -296,7 +314,16 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		chanCloseRequests: make(chan *ChanClose),
 		resolutionMsgs:    make(chan *resolutionMsg),
 		quit:              make(chan struct{}),
-	}, nil
+	}
+
+	s.mailOrchestrator = newMailOrchestrator(&mailOrchConfig{
+		fetchUpdate:    s.cfg.FetchLastChannelUpdate,
+		forwardPackets: s.ForwardPackets,
+		clock:          s.cfg.Clock,
+		expiry:         s.cfg.HTLCExpiry,
+	})
+
+	return s, nil
 }
 
 // resolutionMsg is a struct that wraps an existing ResolutionMsg with a done
@@ -398,7 +425,7 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 			deobfuscator, n, paymentID, paymentHash,
 		)
 		if err != nil {
-			e := fmt.Errorf("Unable to extract result: %v", err)
+			e := fmt.Errorf("unable to extract result: %v", err)
 			log.Error(e)
 			resultChan <- &PaymentResult{
 				Error: e,
@@ -428,7 +455,47 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 		htlc:           htlc,
 	}
 
-	return s.forward(packet)
+	circuit := newPaymentCircuit(&htlc.PaymentHash, packet)
+	actions, err := s.circuits.CommitCircuits(circuit)
+	if err != nil {
+		log.Errorf("unable to commit circuit in switch: %v", err)
+		return err
+	}
+
+	// Drop duplicate packet if it has already been seen.
+	switch {
+	case len(actions.Drops) == 1:
+		return ErrDuplicateAdd
+
+	case len(actions.Fails) == 1:
+		return ErrLocalAddFailed
+	}
+
+	// Send packet to link.
+	packet.circuit = circuit
+
+	// User has created the htlc update therefore we should find the
+	// appropriate channel link and send the payment over this link.
+	link, linkErr := s.getLocalLink(packet, htlc)
+	if linkErr != nil {
+		// Notify the htlc notifier of a link failure on our
+		// outgoing link. Incoming timelock/amount values are
+		// not set because they are not present for local sends.
+		s.cfg.HtlcNotifier.NotifyLinkFailEvent(
+			newHtlcKey(packet),
+			HtlcInfo{
+				OutgoingTimeLock: htlc.Expiry,
+				OutgoingAmt:      htlc.Amount,
+			},
+			HtlcEventTypeSend,
+			linkErr,
+			false,
+		)
+
+		return linkErr
+	}
+
+	return link.HandleLocalAddPacket(packet)
 }
 
 // UpdateForwardingPolicies sends a message to the switch to update the
@@ -473,52 +540,6 @@ func (s *Switch) IsForwardedHTLC(chanID lnwire.ShortChannelID,
 		HtlcID: htlcIndex,
 	})
 	return circuit != nil && circuit.Incoming.ChanID != hop.Source
-}
-
-// forward is used in order to find next channel link and apply htlc update.
-// Also this function is used by channel links itself in order to forward the
-// update after it has been included in the channel.
-func (s *Switch) forward(packet *htlcPacket) error {
-	switch htlc := packet.htlc.(type) {
-	case *lnwire.UpdateAddHTLC:
-		circuit := newPaymentCircuit(&htlc.PaymentHash, packet)
-		actions, err := s.circuits.CommitCircuits(circuit)
-		if err != nil {
-			log.Errorf("unable to commit circuit in switch: %v", err)
-			return err
-		}
-
-		// Drop duplicate packet if it has already been seen.
-		switch {
-		case len(actions.Drops) == 1:
-			return ErrDuplicateAdd
-
-		case len(actions.Fails) == 1:
-			if packet.incomingChanID == hop.Source {
-				return err
-			}
-
-			var failure lnwire.FailureMessage
-			update, err := s.cfg.FetchLastChannelUpdate(
-				packet.incomingChanID,
-			)
-			if err != nil {
-				failure = &lnwire.FailTemporaryNodeFailure{}
-			} else {
-				failure = lnwire.NewTemporaryChannelFailure(update)
-			}
-
-			linkError := NewDetailedLinkError(
-				failure, OutgoingFailureIncompleteForward,
-			)
-
-			return s.failAddPacket(packet, linkError)
-		}
-
-		packet.circuit = circuit
-	}
-
-	return s.route(packet)
 }
 
 // ForwardPackets adds a list of packets to the switch for processing. Fails
@@ -706,28 +727,6 @@ func (s *Switch) proxyFwdErrs(num *int, wg *sync.WaitGroup,
 	}
 }
 
-// route sends a single htlcPacket through the switch and synchronously awaits a
-// response.
-func (s *Switch) route(packet *htlcPacket) error {
-	command := &plexPacket{
-		pkt: packet,
-		err: make(chan error, 1),
-	}
-
-	select {
-	case s.htlcPlex <- command:
-	case <-s.quit:
-		return ErrSwitchExiting
-	}
-
-	select {
-	case err := <-command.err:
-		return err
-	case <-s.quit:
-		return ErrSwitchExiting
-	}
-}
-
 // routeAsync sends a packet through the htlc switch, using the provided err
 // chan to propagate errors back to the caller. The link's quit channel is
 // provided so that the send can be canceled if either the link or the switch
@@ -747,61 +746,15 @@ func (s *Switch) routeAsync(packet *htlcPacket, errChan chan error,
 	case <-linkQuit:
 		return ErrLinkShuttingDown
 	case <-s.quit:
-		return errors.New("Htlc Switch was stopped")
+		return errors.New("htlc switch was stopped")
 	}
 }
 
-// handleLocalDispatch is used at the start/end of the htlc update life cycle.
-// At the start (1) it is used to send the htlc to the channel link without
-// creation of circuit. At the end (2) it is used to notify the user about the
-// result of his payment is it was successful or not.
-//
-//   Alice         Bob          Carol
-//     o --add----> o ---add----> o
-//    (1)
-//
-//    (2)
-//     o <-settle-- o <--settle-- o
-//   Alice         Bob         Carol
-//
-func (s *Switch) handleLocalDispatch(pkt *htlcPacket) error {
-	// User have created the htlc update therefore we should find the
-	// appropriate channel link and send the payment over this link.
-	if htlc, ok := pkt.htlc.(*lnwire.UpdateAddHTLC); ok {
-		link, err := s.handleLocalAddHTLC(pkt, htlc)
-		if err != nil {
-			// Notify the htlc notifier of a link failure on our
-			// outgoing link. Incoming timelock/amount values are
-			// not set because they are not present for local sends.
-			s.cfg.HtlcNotifier.NotifyLinkFailEvent(
-				newHtlcKey(pkt),
-				HtlcInfo{
-					OutgoingTimeLock: htlc.Expiry,
-					OutgoingAmt:      htlc.Amount,
-				},
-				HtlcEventTypeSend,
-				err,
-				false,
-			)
-
-			return err
-		}
-
-		return link.HandleSwitchPacket(pkt)
-	}
-
-	s.wg.Add(1)
-	go s.handleLocalResponse(pkt)
-
-	return nil
-}
-
-// handleLocalAddHTLC handles the addition of a htlc for a send that
-// originates from our node. It returns the link that the htlc should
-// be forwarded outwards on, and a link error if the htlc cannot be
-// forwarded.
-func (s *Switch) handleLocalAddHTLC(pkt *htlcPacket,
-	htlc *lnwire.UpdateAddHTLC) (ChannelLink, *LinkError) {
+// getLocalLink handles the addition of a htlc for a send that originates from
+// our node. It returns the link that the htlc should be forwarded outwards on,
+// and a link error if the htlc cannot be forwarded.
+func (s *Switch) getLocalLink(pkt *htlcPacket, htlc *lnwire.UpdateAddHTLC) (
+	ChannelLink, *LinkError) {
 
 	// Try to find links by node destination.
 	s.indexMtx.RLock()
@@ -939,7 +892,7 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("Received unknown response type: %T",
+		return nil, fmt.Errorf("received unknown response type: %T",
 			htlc)
 	}
 }
@@ -1030,19 +983,13 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 	case *lnwire.UpdateAddHTLC:
 		// Check if the node is set to reject all onward HTLCs and also make
 		// sure that HTLC is not from the source node.
-		if s.cfg.RejectHTLC && packet.incomingChanID != hop.Source {
+		if s.cfg.RejectHTLC {
 			failure := NewDetailedLinkError(
 				&lnwire.FailChannelDisabled{},
 				OutgoingFailureForwardsDisabled,
 			)
 
 			return s.failAddPacket(packet, failure)
-		}
-
-		if packet.incomingChanID == hop.Source {
-			// A blank incomingChanID indicates that this is
-			// a pending user-initiated payment.
-			return s.handleLocalDispatch(packet)
 		}
 
 		// Before we attempt to find a non-strict forwarding path for
@@ -1164,6 +1111,12 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 			return err
 		}
 
+		// closeCircuit returns a nil circuit when a settle packet returns an
+		// ErrUnknownCircuit error upon the inner call to CloseCircuit.
+		if circuit == nil {
+			return nil
+		}
+
 		fail, isFail := htlc.(*lnwire.UpdateFailHTLC)
 		if isFail && !packet.hasSource {
 			switch {
@@ -1216,6 +1169,11 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 			// fully settles?
 			localHTLC := packet.incomingChanID == hop.Source
 			if !localHTLC {
+				log.Infof("Forwarded HTLC(%x) of %v (fee: %v) "+
+					"from IncomingChanID(%v) to OutgoingChanID(%v)",
+					circuit.PaymentHash[:], circuit.OutgoingAmount,
+					circuit.IncomingAmount-circuit.OutgoingAmount,
+					circuit.Incoming.ChanID, circuit.Outgoing.ChanID)
 				s.fwdEventMtx.Lock()
 				s.pendingFwdingEvents = append(
 					s.pendingFwdingEvents,
@@ -1234,7 +1192,9 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// A blank IncomingChanID in a circuit indicates that it is a pending
 		// user-initiated payment.
 		if packet.incomingChanID == hop.Source {
-			return s.handleLocalDispatch(packet)
+			s.wg.Add(1)
+			go s.handleLocalResponse(packet)
+			return nil
 		}
 
 		// Check to see that the source link is online before removing
@@ -1394,19 +1354,28 @@ func (s *Switch) closeCircuit(pkt *htlcPacket) (*PaymentCircuit, error) {
 	// Failed to close circuit because it does not exist. This is likely
 	// because the circuit was already successfully closed.
 	case ErrUnknownCircuit:
-		err := fmt.Errorf("Unable to find target channel "+
-			"for HTLC settle/fail: channel ID = %s, "+
-			"HTLC ID = %d", pkt.outgoingChanID,
-			pkt.outgoingHTLCID)
-		log.Error(err)
-
 		if pkt.destRef != nil {
 			// Add this SettleFailRef to the set of pending settle/fail entries
 			// awaiting acknowledgement.
 			s.pendingSettleFails = append(s.pendingSettleFails, *pkt.destRef)
 		}
 
-		return nil, err
+		// If this is a settle, we will not log an error message as settles
+		// are expected to hit the ErrUnknownCircuit case. The only way fails
+		// can hit this case if the link restarts after having just sent a fail
+		// to the switch.
+		_, isSettle := pkt.htlc.(*lnwire.UpdateFulfillHTLC)
+		if !isSettle {
+			err := fmt.Errorf("unable to find target channel "+
+				"for HTLC fail: channel ID = %s, "+
+				"HTLC ID = %d", pkt.outgoingChanID,
+				pkt.outgoingHTLCID)
+			log.Error(err)
+
+			return nil, err
+		}
+
+		return nil, nil
 
 	// Unexpected error.
 	default:
@@ -1957,13 +1926,13 @@ func (s *Switch) reforwardSettleFails(fwdPkgs []*channeldb.FwdPkg) {
 		// link quit channel, meaning the send will fail only if the
 		// switch receives a shutdown request.
 		errChan := s.ForwardPackets(nil, switchPackets...)
-		go handleBatchFwdErrs(errChan)
+		go handleBatchFwdErrs(errChan, log)
 	}
 }
 
 // handleBatchFwdErrs waits on the given errChan until it is closed, logging the
 // errors returned from any unsuccessful forwarding attempts.
-func handleBatchFwdErrs(errChan chan error) {
+func handleBatchFwdErrs(errChan chan error, l btclog.Logger) {
 	for {
 		err, ok := <-errChan
 		if !ok {
@@ -1976,7 +1945,7 @@ func handleBatchFwdErrs(errChan chan error) {
 			continue
 		}
 
-		log.Errorf("unhandled error while reforwarding htlc "+
+		l.Errorf("Unhandled error while reforwarding htlc "+
 			"settle/fail over htlcswitch: %v", err)
 	}
 }
@@ -2021,7 +1990,8 @@ func (s *Switch) AddLink(link ChannelLink) error {
 	// Get and attach the mailbox for this link, which buffers packets in
 	// case there packets that we tried to deliver while this link was
 	// offline.
-	mailbox := s.mailOrchestrator.GetOrCreateMailBox(chanID)
+	shortChanID := link.ShortChanID()
+	mailbox := s.mailOrchestrator.GetOrCreateMailBox(chanID, shortChanID)
 	link.AttachMailBox(mailbox)
 
 	if err := link.Start(); err != nil {
@@ -2029,7 +1999,6 @@ func (s *Switch) AddLink(link ChannelLink) error {
 		return err
 	}
 
-	shortChanID := link.ShortChanID()
 	if shortChanID == hop.Source {
 		log.Infof("Adding pending link chan_id=%v, short_chan_id=%v",
 			chanID, shortChanID)
@@ -2201,7 +2170,7 @@ func (s *Switch) UpdateShortChanID(chanID lnwire.ChannelID) error {
 
 	// Finally, alert the mail orchestrator to the change of short channel
 	// ID, and deliver any unclaimed packets to the link.
-	mailbox := s.mailOrchestrator.GetOrCreateMailBox(chanID)
+	mailbox := s.mailOrchestrator.GetOrCreateMailBox(chanID, shortChanID)
 	s.mailOrchestrator.BindLiveShortChanID(
 		mailbox, chanID, shortChanID,
 	)

@@ -55,7 +55,7 @@ func TestControlTowerSubscribeUnknown(t *testing.T) {
 	pControl := NewControlTower(channeldb.NewPaymentControl(db))
 
 	// Subscription should fail when the payment is not known.
-	_, _, err = pControl.SubscribePayment(lntypes.Hash{1})
+	_, err = pControl.SubscribePayment(lntypes.Hash{1})
 	if err != channeldb.ErrPaymentNotInitiated {
 		t.Fatal("expected subscribe to fail for unknown payment")
 	}
@@ -86,12 +86,9 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 
 	// Subscription should succeed and immediately report the InFlight
 	// status.
-	inFlight, subscriber1, err := pControl.SubscribePayment(info.PaymentHash)
+	subscriber1, err := pControl.SubscribePayment(info.PaymentHash)
 	if err != nil {
 		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
-	if !inFlight {
-		t.Fatalf("unexpected payment to be in flight")
 	}
 
 	// Register an attempt.
@@ -101,52 +98,53 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 	}
 
 	// Register a second subscriber after the first attempt has started.
-	inFlight, subscriber2, err := pControl.SubscribePayment(info.PaymentHash)
+	subscriber2, err := pControl.SubscribePayment(info.PaymentHash)
 	if err != nil {
 		t.Fatalf("expected subscribe to succeed, but got: %v", err)
 	}
-	if !inFlight {
-		t.Fatalf("unexpected payment to be in flight")
-	}
 
 	// Mark the payment as successful.
-	err = pControl.SettleAttempt(
-		info.PaymentHash, attempt.AttemptID,
-		&channeldb.HTLCSettleInfo{
-			Preimage: preimg,
-		},
+	settleInfo := channeldb.HTLCSettleInfo{
+		Preimage: preimg,
+	}
+	htlcAttempt, err := pControl.SettleAttempt(
+		info.PaymentHash, attempt.AttemptID, &settleInfo,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if *htlcAttempt.Settle != settleInfo {
+		t.Fatalf("unexpected settle info returned")
+	}
 
 	// Register a third subscriber after the payment succeeded.
-	inFlight, subscriber3, err := pControl.SubscribePayment(info.PaymentHash)
+	subscriber3, err := pControl.SubscribePayment(info.PaymentHash)
 	if err != nil {
 		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
-	if inFlight {
-		t.Fatalf("expected payment to be finished")
 	}
 
 	// We expect all subscribers to now report the final outcome followed by
 	// no other events.
-	subscribers := []chan PaymentResult{
+	subscribers := []*ControlTowerSubscriber{
 		subscriber1, subscriber2, subscriber3,
 	}
 
 	for _, s := range subscribers {
-		var result PaymentResult
-		select {
-		case result = <-s:
-		case <-time.After(testTimeout):
-			t.Fatal("timeout waiting for payment result")
+		var result *channeldb.MPPayment
+		for result == nil || result.Status == channeldb.StatusInFlight {
+			select {
+			case item := <-s.Updates:
+				result = item.(*channeldb.MPPayment)
+			case <-time.After(testTimeout):
+				t.Fatal("timeout waiting for payment result")
+			}
 		}
 
-		if !result.Success {
+		if result.Status != channeldb.StatusSucceeded {
 			t.Fatal("unexpected payment state")
 		}
-		if result.Preimage != preimg {
+		settle, _ := result.TerminalInfo()
+		if settle.Preimage != preimg {
 			t.Fatal("unexpected preimage")
 		}
 		if len(result.HTLCs) != 1 {
@@ -161,7 +159,7 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 
 		// After the final event, we expect the channel to be closed.
 		select {
-		case _, ok := <-s:
+		case _, ok := <-s.Updates:
 			if ok {
 				t.Fatal("expected channel to be closed")
 			}
@@ -204,7 +202,7 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 	}
 
 	// Subscription should succeed.
-	_, subscriber1, err := pControl.SubscribePayment(info.PaymentHash)
+	subscriber1, err := pControl.SubscribePayment(info.PaymentHash)
 	if err != nil {
 		t.Fatalf("expected subscribe to succeed, but got: %v", err)
 	}
@@ -220,12 +218,17 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 		}
 
 		// Fail the payment attempt.
-		err := pControl.FailAttempt(
-			info.PaymentHash, attempt.AttemptID,
-			&channeldb.HTLCFailInfo{},
+		failInfo := channeldb.HTLCFailInfo{
+			Reason: channeldb.HTLCFailInternal,
+		}
+		htlcAttempt, err := pControl.FailAttempt(
+			info.PaymentHash, attempt.AttemptID, &failInfo,
 		)
 		if err != nil {
 			t.Fatalf("unable to fail htlc: %v", err)
+		}
+		if *htlcAttempt.Failure != failInfo {
+			t.Fatalf("unexpected fail info returned")
 		}
 	}
 
@@ -235,29 +238,29 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 	}
 
 	// Register a second subscriber after the payment failed.
-	inFlight, subscriber2, err := pControl.SubscribePayment(info.PaymentHash)
+	subscriber2, err := pControl.SubscribePayment(info.PaymentHash)
 	if err != nil {
 		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
-	if inFlight {
-		t.Fatalf("expected payment to be finished")
 	}
 
 	// We expect all subscribers to now report the final outcome followed by
 	// no other events.
-	subscribers := []chan PaymentResult{
+	subscribers := []*ControlTowerSubscriber{
 		subscriber1, subscriber2,
 	}
 
 	for _, s := range subscribers {
-		var result PaymentResult
-		select {
-		case result = <-s:
-		case <-time.After(testTimeout):
-			t.Fatal("timeout waiting for payment result")
+		var result *channeldb.MPPayment
+		for result == nil || result.Status == channeldb.StatusInFlight {
+			select {
+			case item := <-s.Updates:
+				result = item.(*channeldb.MPPayment)
+			case <-time.After(testTimeout):
+				t.Fatal("timeout waiting for payment result")
+			}
 		}
 
-		if result.Success {
+		if result.Status == channeldb.StatusSucceeded {
 			t.Fatal("unexpected payment state")
 		}
 
@@ -282,13 +285,13 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 				len(result.HTLCs))
 		}
 
-		if result.FailureReason != channeldb.FailureReasonTimeout {
+		if *result.FailureReason != channeldb.FailureReasonTimeout {
 			t.Fatal("unexpected failure reason")
 		}
 
 		// After the final event, we expect the channel to be closed.
 		select {
-		case _, ok := <-s:
+		case _, ok := <-s.Updates:
 			if ok {
 				t.Fatal("expected channel to be closed")
 			}
@@ -324,7 +327,7 @@ func genInfo() (*channeldb.PaymentCreationInfo, *channeldb.HTLCAttemptInfo,
 	rhash := sha256.Sum256(preimage[:])
 	return &channeldb.PaymentCreationInfo{
 			PaymentHash:    rhash,
-			Value:          1,
+			Value:          testRoute.ReceiverAmt(),
 			CreationTime:   time.Unix(time.Now().Unix(), 0),
 			PaymentRequest: []byte("hola"),
 		},

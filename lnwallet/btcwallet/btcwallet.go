@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -26,6 +27,10 @@ import (
 
 const (
 	defaultAccount = uint32(waddrmgr.DefaultAccountNum)
+
+	// UnconfirmedHeight is the special case end height that is used to
+	// obtain unconfirmed transactions from ListTransactionDetails.
+	UnconfirmedHeight int32 = -1
 )
 
 var (
@@ -274,7 +279,7 @@ func (b *BtcWallet) IsOurAddress(a btcutil.Address) bool {
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight) (*wire.MsgTx, error) {
+	feeRate chainfee.SatPerKWeight, label string) (*wire.MsgTx, error) {
 
 	// Convert our fee rate from sat/kw to sat/kb since it's required by
 	// SendOutputs.
@@ -284,7 +289,10 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 	if len(outputs) < 1 {
 		return nil, lnwallet.ErrNoOutputs
 	}
-	return b.wallet.SendOutputs(outputs, defaultAccount, 1, feeSatPerKB)
+
+	return b.wallet.SendOutputs(
+		outputs, defaultAccount, 1, feeSatPerKB, label,
+	)
 }
 
 // CreateSimpleTx creates a Bitcoin transaction paying to the specified
@@ -375,8 +383,8 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 // publishing the transaction fails, an error describing the reason is returned
 // (currently ErrDoubleSpend). If the transaction is already published to the
 // network (either in the mempool or chain) no error will be returned.
-func (b *BtcWallet) PublishTransaction(tx *wire.MsgTx) error {
-	if err := b.wallet.PublishTransaction(tx); err != nil {
+func (b *BtcWallet) PublishTransaction(tx *wire.MsgTx, label string) error {
+	if err := b.wallet.PublishTransaction(tx, label); err != nil {
 
 		// If we failed to publish the transaction, check whether we
 		// got an error of known type.
@@ -398,6 +406,17 @@ func (b *BtcWallet) PublishTransaction(tx *wire.MsgTx) error {
 		}
 	}
 	return nil
+}
+
+// LabelTransaction adds a label to a transaction. If the tx already
+// has a label, this call will fail unless the overwrite parameter
+// is set. Labels must not be empty, and they are limited to 500 chars.
+//
+// Note: it is part of the WalletController interface.
+func (b *BtcWallet) LabelTransaction(hash chainhash.Hash, label string,
+	overwrite bool) error {
+
+	return b.wallet.LabelTransaction(hash, label, overwrite)
 }
 
 // extractBalanceDelta extracts the net balance delta from the PoV of the
@@ -458,6 +477,7 @@ func minedTransactionsToDetails(
 			TotalFees:        int64(tx.Fee),
 			DestAddresses:    destAddresses,
 			RawTx:            tx.Transaction,
+			Label:            tx.Label,
 		}
 
 		balanceDelta, err := extractBalanceDelta(tx, wireTx)
@@ -503,6 +523,7 @@ func unminedTransactionsToDetail(
 		Timestamp:     summary.Timestamp,
 		DestAddresses: destAddresses,
 		RawTx:         summary.Transaction,
+		Label:         summary.Label,
 	}
 
 	balanceDelta, err := extractBalanceDelta(summary, wireTx)
@@ -515,20 +536,22 @@ func unminedTransactionsToDetail(
 }
 
 // ListTransactionDetails returns a list of all transactions which are
-// relevant to the wallet.
+// relevant to the wallet. It takes inclusive start and end height to allow
+// paginated queries. Unconfirmed transactions can be included in the query
+// by providing endHeight = UnconfirmedHeight (= -1).
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
+func (b *BtcWallet) ListTransactionDetails(startHeight,
+	endHeight int32) ([]*lnwallet.TransactionDetail, error) {
+
 	// Grab the best block the wallet knows of, we'll use this to calculate
 	// # of confirmations shortly below.
 	bestBlock := b.wallet.Manager.SyncedTo()
 	currentHeight := bestBlock.Height
 
-	// We'll attempt to find all unconfirmed transactions (height of -1),
-	// as well as all transactions that are known to have confirmed at this
-	// height.
-	start := base.NewBlockIdentifierFromHeight(0)
-	stop := base.NewBlockIdentifierFromHeight(-1)
+	// We'll attempt to find all transactions from start to end height.
+	start := base.NewBlockIdentifierFromHeight(startHeight)
+	stop := base.NewBlockIdentifierFromHeight(endHeight)
 	txns, err := b.wallet.GetTransactions(start, stop, nil)
 	if err != nil {
 		return nil, err

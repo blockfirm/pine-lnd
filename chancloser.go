@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
@@ -84,7 +83,7 @@ type chanCloseCfg struct {
 	unregisterChannel func(lnwire.ChannelID)
 
 	// broadcastTx broadcasts the passed transaction to the network.
-	broadcastTx func(*wire.MsgTx) error
+	broadcastTx func(*wire.MsgTx, string) error
 
 	// disableChannel disables a channel, resulting in it not being able to
 	// forward payments.
@@ -347,6 +346,21 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 				"instead have %v", spew.Sdump(msg))
 		}
 
+		// As we're the responder to this shutdown (the other party
+		// wants to close), we'll check if this is a frozen channel or
+		// not. If the channel is frozen as we were also the initiator
+		// of the channel opening, then we'll deny their close attempt.
+		chanInitiator := c.cfg.channel.IsInitiator()
+		if !chanInitiator && c.cfg.channel.State().ChanType.IsFrozen() &&
+			c.negotiationHeight < c.cfg.channel.State().ThawHeight {
+
+			return nil, false, fmt.Errorf("initiator attempting "+
+				"to co-op close frozen ChannelPoint(%v) "+
+				"(current_height=%v, thaw_height=%v)",
+				c.chanPoint, c.negotiationHeight,
+				c.cfg.channel.State().ThawHeight)
+		}
+
 		// If the remote node opened the channel with option upfront shutdown
 		// script, check that the script they provided matches.
 		if err := maybeMatchScript(
@@ -382,7 +396,7 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 
 		// We'll also craft our initial close proposal in order to keep
 		// the negotiation moving, but only if we're the negotiator.
-		if c.cfg.channel.IsInitiator() {
+		if chanInitiator {
 			closeSigned, err := c.proposeCloseSigned(c.idealFeeSat)
 			if err != nil {
 				return nil, false, err
@@ -495,11 +509,15 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 		// transaction!  We'll craft the final closing transaction so
 		// we can broadcast it to the network.
 		matchingSig := c.priorFeeOffers[remoteProposedFee].Signature
-		localSigBytes := matchingSig.ToSignatureBytes()
-		localSig := append(localSigBytes, byte(txscript.SigHashAll))
+		localSig, err := matchingSig.ToSignature()
+		if err != nil {
+			return nil, false, err
+		}
 
-		remoteSigBytes := closeSignedMsg.Signature.ToSignatureBytes()
-		remoteSig := append(remoteSigBytes, byte(txscript.SigHashAll))
+		remoteSig, err := closeSignedMsg.Signature.ToSignature()
+		if err != nil {
+			return nil, false, err
+		}
 
 		closeTx, _, err := c.cfg.channel.CompleteCooperativeClose(
 			localSig, remoteSig, c.localDeliveryScript,
@@ -526,7 +544,8 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 			newLogClosure(func() string {
 				return spew.Sdump(closeTx)
 			}))
-		if err := c.cfg.broadcastTx(closeTx); err != nil {
+		err = c.cfg.broadcastTx(closeTx, "")
+		if err != nil {
 			return nil, false, err
 		}
 
@@ -574,7 +593,7 @@ func (c *channelCloser) proposeCloseSigned(fee btcutil.Amount) (*lnwire.ClosingS
 	// party responds we'll be able to decide if we've agreed on fees or
 	// not.
 	c.lastFeeProposal = fee
-	parsedSig, err := lnwire.NewSigFromRawSignature(rawSig)
+	parsedSig, err := lnwire.NewSigFromSignature(rawSig)
 	if err != nil {
 		return nil, err
 	}

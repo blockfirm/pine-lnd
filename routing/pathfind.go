@@ -58,24 +58,6 @@ var (
 	// DefaultAprioriHopProbability is the default a priori probability for
 	// a hop.
 	DefaultAprioriHopProbability = float64(0.6)
-
-	// errNoTlvPayload is returned when the destination hop does not support
-	// a tlv payload.
-	errNoTlvPayload = errors.New("destination hop doesn't " +
-		"understand new TLV payloads")
-
-	// errNoPaymentAddr is returned when the destination hop does not
-	// support payment addresses.
-	errNoPaymentAddr = errors.New("destination hop doesn't " +
-		"understand payment addresses")
-
-	// errNoPathFound is returned when a path to the target destination does
-	// not exist in the graph.
-	errNoPathFound = errors.New("unable to find a path to destination")
-
-	// errInsufficientLocalBalance is returned when none of the local
-	// channels have enough balance for the payment.
-	errInsufficientBalance = errors.New("insufficient local balance")
 )
 
 // edgePolicyWithSource is a helper struct to keep track of the source node
@@ -92,6 +74,7 @@ type edgePolicyWithSource struct {
 // custom records and payment address.
 type finalHopParams struct {
 	amt         lnwire.MilliSatoshi
+	totalAmt    lnwire.MilliSatoshi
 	cltvDelta   uint16
 	records     record.CustomSet
 	paymentAddr *[32]byte
@@ -195,7 +178,8 @@ func newRoute(sourceVertex route.Vertex,
 			// Otherwise attach the mpp record if it exists.
 			if finalHop.paymentAddr != nil {
 				mpp = record.NewMPP(
-					finalHop.amt, *finalHop.paymentAddr,
+					finalHop.totalAmt,
+					*finalHop.paymentAddr,
 				)
 			}
 		} else {
@@ -271,7 +255,7 @@ func edgeWeight(lockedAmt lnwire.MilliSatoshi, fee lnwire.MilliSatoshi,
 // graphParams wraps the set of graph parameters passed to findPath.
 type graphParams struct {
 	// graph is the ChannelGraph to be used during path finding.
-	graph *channeldb.ChannelGraph
+	graph routingGraph
 
 	// additionalEdges is an optional set of edges that should be
 	// considered during path finding, that is not already found in the
@@ -300,9 +284,9 @@ type RestrictParams struct {
 	// the source to the target.
 	FeeLimit lnwire.MilliSatoshi
 
-	// OutgoingChannelID is the channel that needs to be taken to the first
-	// hop. If nil, any channel may be used.
-	OutgoingChannelID *uint64
+	// OutgoingChannelIDs is the list of channels that are allowed for the
+	// first hop. If nil, any channel may be used.
+	OutgoingChannelIDs []uint64
 
 	// LastHop is the pubkey of the last node before the final destination
 	// is reached. If nil, any node may be used.
@@ -342,13 +326,14 @@ type PathFindingConfig struct {
 	MinProbability float64
 }
 
-// getMaxOutgoingAmt returns the maximum available balance in any of the
-// channels of the given node.
-func getMaxOutgoingAmt(node route.Vertex, outgoingChan *uint64,
+// getOutgoingBalance returns the maximum available balance in any of the
+// channels of the given node. The second return parameters is the total
+// available balance.
+func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 	bandwidthHints map[uint64]lnwire.MilliSatoshi,
-	g routingGraph) (lnwire.MilliSatoshi, error) {
+	g routingGraph) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, error) {
 
-	var max lnwire.MilliSatoshi
+	var max, total lnwire.MilliSatoshi
 	cb := func(edgeInfo *channeldb.ChannelEdgeInfo, outEdge,
 		_ *channeldb.ChannelEdgePolicy) error {
 
@@ -359,22 +344,28 @@ func getMaxOutgoingAmt(node route.Vertex, outgoingChan *uint64,
 		chanID := outEdge.ChannelID
 
 		// Enforce outgoing channel restriction.
-		if outgoingChan != nil && chanID != *outgoingChan {
-			return nil
+		if outgoingChans != nil {
+			if _, ok := outgoingChans[chanID]; !ok {
+				return nil
+			}
 		}
 
 		bandwidth, ok := bandwidthHints[chanID]
 
-		// If the bandwidth is not available for whatever reason, don't
-		// fail the pathfinding early.
+		// If the bandwidth is not available, use the channel capacity.
+		// This can happen when a channel is added to the graph after
+		// we've already queried the bandwidth hints.
 		if !ok {
-			max = lnwire.MaxMilliSatoshi
-			return nil
+			bandwidth = lnwire.NewMSatFromSatoshis(
+				edgeInfo.Capacity,
+			)
 		}
 
 		if bandwidth > max {
 			max = bandwidth
 		}
+
+		total += bandwidth
 
 		return nil
 	}
@@ -382,9 +373,9 @@ func getMaxOutgoingAmt(node route.Vertex, outgoingChan *uint64,
 	// Iterate over all channels of the to node.
 	err := g.forEachNodeChannel(node, cb)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return max, err
+	return max, total, err
 }
 
 // findPath attempts to find a path from the source node within the ChannelGraph
@@ -399,34 +390,8 @@ func getMaxOutgoingAmt(node route.Vertex, outgoingChan *uint64,
 // path and accurately check the amount to forward at every node against the
 // available bandwidth.
 func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
-	source, target route.Vertex, amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
-	[]*channeldb.ChannelEdgePolicy, error) {
-
-	routingTx, err := newDbRoutingTx(g.graph)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		err := routingTx.close()
-		if err != nil {
-			log.Errorf("Error closing db tx: %v", err)
-		}
-	}()
-
-	return findPathInternal(
-		g.additionalEdges, g.bandwidthHints, routingTx, r, cfg, source,
-		target, amt, finalHtlcExpiry,
-	)
-}
-
-// findPathInternal is the internal implementation of findPath.
-func findPathInternal(
-	additionalEdges map[route.Vertex][]*channeldb.ChannelEdgePolicy,
-	bandwidthHints map[uint64]lnwire.MilliSatoshi,
-	graph routingGraph,
-	r *RestrictParams, cfg *PathFindingConfig,
-	source, target route.Vertex, amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
-	[]*channeldb.ChannelEdgePolicy, error) {
+	source, target route.Vertex, amt lnwire.MilliSatoshi,
+	finalHtlcExpiry int32) ([]*channeldb.ChannelEdgePolicy, error) {
 
 	// Pathfinding can be a significant portion of the total payment
 	// latency, especially on low-powered devices. Log several metrics to
@@ -445,7 +410,7 @@ func findPathInternal(
 	features := r.DestFeatures
 	if features == nil {
 		var err error
-		features, err = graph.fetchNodeFeatures(target)
+		features, err = g.graph.fetchNodeFeatures(target)
 		if err != nil {
 			return nil, err
 		}
@@ -455,13 +420,15 @@ func findPathInternal(
 	// required features.
 	err := feature.ValidateRequired(features)
 	if err != nil {
-		return nil, err
+		log.Warnf("Pathfinding destination node features: %v", err)
+		return nil, errUnknownRequiredFeature
 	}
 
 	// Ensure that all transitive dependencies are set.
 	err = feature.ValidateDeps(features)
 	if err != nil {
-		return nil, err
+		log.Warnf("Pathfinding destination node features: %v", err)
+		return nil, errMissingDependentFeature
 	}
 
 	// Now that we know the feature vector is well formed, we'll proceed in
@@ -484,19 +451,37 @@ func findPathInternal(
 		return nil, errNoPaymentAddr
 	}
 
+	// Set up outgoing channel map for quicker access.
+	var outgoingChanMap map[uint64]struct{}
+	if len(r.OutgoingChannelIDs) > 0 {
+		outgoingChanMap = make(map[uint64]struct{})
+		for _, outChan := range r.OutgoingChannelIDs {
+			outgoingChanMap[outChan] = struct{}{}
+		}
+	}
+
 	// If we are routing from ourselves, check that we have enough local
 	// balance available.
-	self := graph.sourceNode()
+	self := g.graph.sourceNode()
 
 	if source == self {
-		max, err := getMaxOutgoingAmt(
-			self, r.OutgoingChannelID, bandwidthHints, graph,
+		max, total, err := getOutgoingBalance(
+			self, outgoingChanMap, g.bandwidthHints, g.graph,
 		)
 		if err != nil {
 			return nil, err
 		}
-		if max < amt {
+
+		// If the total outgoing balance isn't sufficient, it will be
+		// impossible to complete the payment.
+		if total < amt {
 			return nil, errInsufficientBalance
+		}
+
+		// If there is only not enough capacity on a single route, it
+		// may still be possible to complete the payment by splitting.
+		if max < amt {
+			return nil, errNoPathFound
 		}
 	}
 
@@ -509,7 +494,7 @@ func findPathInternal(
 	distance := make(map[route.Vertex]*nodeWithDist, estimatedNodeCount)
 
 	additionalEdgesWithSrc := make(map[route.Vertex][]*edgePolicyWithSource)
-	for vertex, outgoingEdgePolicies := range additionalEdges {
+	for vertex, outgoingEdgePolicies := range g.additionalEdges {
 		// Build reverse lookup to find incoming edges. Needed because
 		// search is taken place from target to source.
 		for _, outgoingEdgePolicy := range outgoingEdgePolicies {
@@ -584,7 +569,8 @@ func findPathInternal(
 
 		log.Trace(newLogClosure(func() string {
 			return fmt.Sprintf("path finding probability: fromnode=%v,"+
-				" tonode=%v, probability=%v", fromVertex, toNodeDist.node,
+				" tonode=%v, amt=%v, probability=%v",
+				fromVertex, toNodeDist.node, amountToSend,
 				edgeProbability)
 		}))
 
@@ -756,7 +742,7 @@ func findPathInternal(
 		}
 
 		// Fetch node features fresh from the graph.
-		fromFeatures, err := graph.fetchNodeFeatures(node)
+		fromFeatures, err := g.graph.fetchNodeFeatures(node)
 		if err != nil {
 			return nil, err
 		}
@@ -790,9 +776,9 @@ func findPathInternal(
 		pivot := partialPath.node
 
 		// Create unified policies for all incoming connections.
-		u := newUnifiedPolicies(self, pivot, r.OutgoingChannelID)
+		u := newUnifiedPolicies(self, pivot, outgoingChanMap)
 
-		err := u.addGraphPolicies(graph)
+		err := u.addGraphPolicies(g.graph)
 		if err != nil {
 			return nil, err
 		}
@@ -823,7 +809,7 @@ func findPathInternal(
 			}
 
 			policy := unifiedPolicy.getPolicy(
-				amtToSend, bandwidthHints,
+				amtToSend, g.bandwidthHints,
 			)
 
 			if policy == nil {

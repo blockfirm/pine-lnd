@@ -250,7 +250,6 @@ func (s *Server) AddHoldInvoice(ctx context.Context,
 		IsChannelActive:    s.cfg.IsChannelActive,
 		ChainParams:        s.cfg.ChainParams,
 		NodeSigner:         s.cfg.NodeSigner,
-		MaxPaymentMSat:     s.cfg.MaxPaymentMSat,
 		DefaultCLTVExpiry:  s.cfg.DefaultCLTVExpiry,
 		ChanDB:             s.cfg.ChanDB,
 		GenInvoiceFeatures: s.cfg.GenInvoiceFeatures,
@@ -275,6 +274,8 @@ func (s *Server) AddHoldInvoice(ctx context.Context,
 		FallbackAddr:    invoice.FallbackAddr,
 		CltvExpiry:      invoice.CltvExpiry,
 		Private:         invoice.Private,
+		HodlInvoice:     true,
+		Preimage:        nil,
 	}
 
 	_, dbInvoice, err := AddInvoice(ctx, addInvoiceCfg, addInvoiceData)

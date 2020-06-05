@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/autopilot"
+	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -17,7 +18,7 @@ import (
 // configuration is sane. Currently it checks that the heuristic configuration
 // makes sense. In case the config is valid, it will return a list of
 // WeightedHeuristics that can be combined for use with the autopilot agent.
-func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
+func validateAtplCfg(cfg *lncfg.AutoPilot) ([]*autopilot.WeightedHeuristic,
 	error) {
 
 	var (
@@ -39,7 +40,7 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 		a, ok := autopilot.AvailableHeuristics[name]
 		if !ok {
 			// No heuristic matching this config option was found.
-			return nil, fmt.Errorf("Heuristic %v not available. %v",
+			return nil, fmt.Errorf("heuristic %v not available. %v",
 				name, availStr)
 		}
 
@@ -58,11 +59,11 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 
 	// Check found heuristics. We must have at least one to operate.
 	if len(heuristics) == 0 {
-		return nil, fmt.Errorf("No active heuristics. %v", availStr)
+		return nil, fmt.Errorf("no active heuristics: %v", availStr)
 	}
 
 	if sum != 1.0 {
-		return nil, fmt.Errorf("Heuristic weights must sum to 1.0")
+		return nil, fmt.Errorf("heuristic weights must sum to 1.0")
 	}
 	return heuristics, nil
 }
@@ -138,8 +139,8 @@ var _ autopilot.ChannelController = (*chanController)(nil)
 // Agent instance based on the passed configuration structs. The agent and all
 // interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
-func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
-	*autopilot.ManagerCfg, error) {
+func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
+	chainCfg *lncfg.Chain) (*autopilot.ManagerCfg, error) {
 
 	atplLog.Infof("Instantiating autopilot with active=%v, "+
 		"max_channels=%d, allocation=%f, min_chan_size=%d, "+
@@ -169,7 +170,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 
 	// With the heuristic itself created, we can now populate the remainder
 	// of the items that the autopilot agent needs to perform its duties.
-	self := svr.identityPriv.PubKey()
+	self := svr.identityECDH.PubKey()
 	pilotCfg := autopilot.Config{
 		Self:      self,
 		Heuristic: weightedAttachment,

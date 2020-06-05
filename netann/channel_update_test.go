@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/netann"
@@ -17,7 +19,7 @@ type mockSigner struct {
 }
 
 func (m *mockSigner) SignMessage(pk *btcec.PublicKey,
-	msg []byte) (*btcec.Signature, error) {
+	msg []byte) (input.Signature, error) {
 
 	if m.err != nil {
 		return nil, m.err
@@ -29,7 +31,8 @@ func (m *mockSigner) SignMessage(pk *btcec.PublicKey,
 var _ lnwallet.MessageSigner = (*mockSigner)(nil)
 
 var (
-	privKey, _ = btcec.NewPrivateKey(btcec.S256())
+	privKey, _    = btcec.NewPrivateKey(btcec.S256())
+	privKeySigner = &keychain.PrivKeyDigestSigner{PrivKey: privKey}
 
 	pubKey = privKey.PubKey()
 
@@ -51,35 +54,35 @@ var updateDisableTests = []updateDisableTest{
 		startEnabled: true,
 		disable:      true,
 		startTime:    time.Now(),
-		signer:       netann.NewNodeSigner(privKey),
+		signer:       netann.NewNodeSigner(privKeySigner),
 	},
 	{
 		name:         "working signer enabled to enabled",
 		startEnabled: true,
 		disable:      false,
 		startTime:    time.Now(),
-		signer:       netann.NewNodeSigner(privKey),
+		signer:       netann.NewNodeSigner(privKeySigner),
 	},
 	{
 		name:         "working signer disabled to enabled",
 		startEnabled: false,
 		disable:      false,
 		startTime:    time.Now(),
-		signer:       netann.NewNodeSigner(privKey),
+		signer:       netann.NewNodeSigner(privKeySigner),
 	},
 	{
 		name:         "working signer disabled to disabled",
 		startEnabled: false,
 		disable:      true,
 		startTime:    time.Now(),
-		signer:       netann.NewNodeSigner(privKey),
+		signer:       netann.NewNodeSigner(privKeySigner),
 	},
 	{
 		name:         "working signer future monotonicity",
 		startEnabled: true,
 		disable:      true,
 		startTime:    time.Now().Add(time.Hour), // must increment
-		signer:       netann.NewNodeSigner(privKey),
+		signer:       netann.NewNodeSigner(privKeySigner),
 	},
 	{
 		name:      "failing signer",

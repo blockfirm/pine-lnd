@@ -15,10 +15,6 @@ const (
 	// this update can't bring us something new, or because a node
 	// announcement was given for node not found in any channel.
 	ErrIgnored
-
-	// ErrPaymentAttemptTimeout is an error that indicates that a payment
-	// attempt timed out before we were able to successfully route an HTLC.
-	ErrPaymentAttemptTimeout
 )
 
 // routerError is a structure that represent the error inside the routing package,
@@ -37,15 +33,6 @@ func (e *routerError) Error() string {
 
 // A compile time check to ensure routerError implements the error interface.
 var _ error = (*routerError)(nil)
-
-// newErr creates a routerError by the given error description and its
-// corresponding error code.
-func newErr(code errorCode, a interface{}) *routerError {
-	return &routerError{
-		code: code,
-		err:  errors.New(a),
-	}
-}
 
 // newErrf creates a routerError by the given error formatted description and
 // its corresponding error code.

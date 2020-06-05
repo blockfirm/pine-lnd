@@ -5,10 +5,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/watchtower/lookout"
 )
@@ -34,8 +34,8 @@ var (
 )
 
 // Config defines the resources and parameters used to configure a Watchtower.
-// All nil-able elements with the Config must be set in order for the Watchtower
-// to function properly.
+// All nil-able elements besides tor-related ones must be set in order for the
+// Watchtower to function properly.
 type Config struct {
 	// ChainHash identifies the chain that the watchtower will be monitoring
 	// for breaches and that will be advertised in the server's Init message
@@ -63,16 +63,16 @@ type Config struct {
 	// successfully sent funds can be received.
 	NewAddress func() (btcutil.Address, error)
 
-	// NodePrivKey is private key to be used in accepting new brontide
-	// connections.
-	NodePrivKey *btcec.PrivateKey
+	// NodeKeyECDH is the ECDH capable wrapper of the key to be used in
+	// accepting new brontide connections.
+	NodeKeyECDH keychain.SingleKeyECDH
 
 	// PublishTx provides the ability to send a signed transaction to the
 	// network.
 	//
 	// TODO(conner): replace with lnwallet.WalletController interface to
 	// have stronger guarantees wrt. returned error types.
-	PublishTx func(*wire.MsgTx) error
+	PublishTx func(*wire.MsgTx, string) error
 
 	// ListenAddrs specifies the listening addresses of the tower.
 	ListenAddrs []net.Addr
@@ -89,4 +89,16 @@ type Config struct {
 	// message from the other end, if the connection has stopped buffering
 	// the server's replies.
 	WriteTimeout time.Duration
+
+	// TorController allows the watchtower to optionally setup an onion hidden
+	// service.
+	TorController *tor.Controller
+
+	// WatchtowerKeyPath allows the watchtower to specify where the private key
+	// for a watchtower hidden service should be stored.
+	WatchtowerKeyPath string
+
+	// Type specifies the hidden service type (V2 or V3) that the watchtower
+	// will create.
+	Type tor.OnionType
 }

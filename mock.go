@@ -33,7 +33,7 @@ type mockSigner struct {
 }
 
 func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) ([]byte, error) {
+	signDesc *input.SignDescriptor) (input.Signature, error) {
 	amt := signDesc.Output.Value
 	witnessScript := signDesc.WitnessScript
 	privKey := m.key
@@ -58,7 +58,7 @@ func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx,
 		return nil, err
 	}
 
-	return sig[:len(sig)-1], nil
+	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
 }
 
 func (m *mockSigner) ComputeInputScript(tx *wire.MsgTx,
@@ -110,6 +110,10 @@ func (m *mockNotfier) RegisterBlockEpochNtfn(
 
 func (m *mockNotfier) Start() error {
 	return nil
+}
+
+func (m *mockNotfier) Started() bool {
+	return true
 }
 
 func (m *mockNotfier) Stop() error {
@@ -277,7 +281,7 @@ func (*mockWalletController) IsOurAddress(a btcutil.Address) bool {
 }
 
 func (*mockWalletController) SendOutputs(outputs []*wire.TxOut,
-	_ chainfee.SatPerKWeight) (*wire.MsgTx, error) {
+	_ chainfee.SatPerKWeight, _ string) (*wire.MsgTx, error) {
 
 	return nil, nil
 }
@@ -313,15 +317,22 @@ func (m *mockWalletController) ListUnspentWitness(minconfirms,
 	ret = append(ret, utxo)
 	return ret, nil
 }
-func (*mockWalletController) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
+func (*mockWalletController) ListTransactionDetails(_, _ int32) ([]*lnwallet.TransactionDetail, error) {
 	return nil, nil
 }
 func (*mockWalletController) LockOutpoint(o wire.OutPoint)   {}
 func (*mockWalletController) UnlockOutpoint(o wire.OutPoint) {}
-func (m *mockWalletController) PublishTransaction(tx *wire.MsgTx) error {
+func (m *mockWalletController) PublishTransaction(tx *wire.MsgTx, _ string) error {
 	m.publishedTransactions <- tx
 	return nil
 }
+
+func (m *mockWalletController) LabelTransaction(_ chainhash.Hash, _ string,
+	_ bool) error {
+
+	return nil
+}
+
 func (*mockWalletController) SubscribeTransactions() (lnwallet.TransactionSubscription, error) {
 	return nil, nil
 }
@@ -355,7 +366,22 @@ func (m *mockSecretKeyRing) DerivePrivKey(keyDesc keychain.KeyDescriptor) (*btce
 	return m.rootKey, nil
 }
 
-func (m *mockSecretKeyRing) ScalarMult(keyDesc keychain.KeyDescriptor,
-	pubKey *btcec.PublicKey) ([]byte, error) {
-	return nil, nil
+func (m *mockSecretKeyRing) ECDH(_ keychain.KeyDescriptor,
+	pubKey *btcec.PublicKey) ([32]byte, error) {
+
+	return [32]byte{}, nil
 }
+
+func (m *mockSecretKeyRing) SignDigest(_ keychain.KeyDescriptor,
+	digest [32]byte) (*btcec.Signature, error) {
+
+	return m.rootKey.Sign(digest[:])
+}
+
+func (m *mockSecretKeyRing) SignDigestCompact(_ keychain.KeyDescriptor,
+	digest [32]byte) ([]byte, error) {
+
+	return btcec.SignCompact(btcec.S256(), m.rootKey, digest[:], true)
+}
+
+var _ keychain.SecretKeyRing = (*mockSecretKeyRing)(nil)

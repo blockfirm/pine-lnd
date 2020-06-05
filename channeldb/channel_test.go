@@ -98,13 +98,22 @@ func makeTestDB() (*DB, func(), error) {
 	}
 
 	// Next, create channeldb for the first time.
-	cdb, err := Open(tempDirName, OptionClock(testClock))
+	backend, backendCleanup, err := kvdb.GetTestBackend(tempDirName, "cdb")
 	if err != nil {
+		backendCleanup()
+		return nil, nil, err
+	}
+
+	cdb, err := CreateWithBackend(backend, OptionClock(testClock))
+	if err != nil {
+		backendCleanup()
+		os.RemoveAll(tempDirName)
 		return nil, nil, err
 	}
 
 	cleanUp := func() {
 		cdb.Close()
+		backendCleanup()
 		os.RemoveAll(tempDirName)
 	}
 
@@ -349,7 +358,7 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 	chanID := lnwire.NewShortChanIDFromInt(uint64(rand.Int63()))
 
 	return &OpenChannel{
-		ChanType:          SingleFunderBit,
+		ChanType:          SingleFunderBit | FrozenBit,
 		ChainHash:         key,
 		FundingOutpoint:   wire.OutPoint{Hash: key, Index: rand.Uint32()},
 		ShortChannelID:    chanID,
@@ -387,6 +396,7 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 		Db:                      cdb,
 		Packager:                NewChannelPackager(chanID),
 		FundingTxn:              testTx,
+		ThawHeight:              uint32(defaultPendingHeight),
 	}
 }
 
@@ -1576,6 +1586,65 @@ func TestBalanceAtHeight(t *testing.T) {
 			if remote != test.expectedRemoteBalance {
 				t.Fatalf("expected remote: %v, got: %v",
 					test.expectedRemoteBalance, remote)
+			}
+		})
+	}
+}
+
+// TestHasChanStatus asserts the behavior of HasChanStatus by checking the
+// behavior of various status flags in addition to the special case of
+// ChanStatusDefault which is treated like a flag in the code base even though
+// it isn't.
+func TestHasChanStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status ChannelStatus
+		expHas map[ChannelStatus]bool
+	}{
+		{
+			name:   "default",
+			status: ChanStatusDefault,
+			expHas: map[ChannelStatus]bool{
+				ChanStatusDefault: true,
+				ChanStatusBorked:  false,
+			},
+		},
+		{
+			name:   "single flag",
+			status: ChanStatusBorked,
+			expHas: map[ChannelStatus]bool{
+				ChanStatusDefault: false,
+				ChanStatusBorked:  true,
+			},
+		},
+		{
+			name:   "multiple flags",
+			status: ChanStatusBorked | ChanStatusLocalDataLoss,
+			expHas: map[ChannelStatus]bool{
+				ChanStatusDefault:       false,
+				ChanStatusBorked:        true,
+				ChanStatusLocalDataLoss: true,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			c := &OpenChannel{
+				chanStatus: test.status,
+			}
+
+			for status, expHas := range test.expHas {
+				has := c.HasChanStatus(status)
+				if has == expHas {
+					continue
+				}
+
+				t.Fatalf("expected chan status to "+
+					"have %s? %t, got: %t",
+					status, expHas, has)
 			}
 		})
 	}

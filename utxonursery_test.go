@@ -467,7 +467,7 @@ func createNurseryTestContext(t *testing.T,
 		Store:      storeIntercepter,
 		ChainIO:    chainIO,
 		SweepInput: sweeper.sweepInput,
-		PublishTransaction: func(tx *wire.MsgTx) error {
+		PublishTransaction: func(tx *wire.MsgTx, _ string) error {
 			return publishFunc(tx, "nursery")
 		},
 	}
@@ -626,21 +626,6 @@ func createOutgoingRes(onLocalCommitment bool) *lnwallet.OutgoingHtlcResolution 
 	}
 
 	return &outgoingRes
-}
-
-func createCommitmentRes() *lnwallet.CommitOutputResolution {
-	// Set up a commitment output resolution to hand off to nursery.
-	commitRes := lnwallet.CommitOutputResolution{
-		SelfOutPoint: wire.OutPoint{},
-		SelfOutputSignDesc: input.SignDescriptor{
-			Output: &wire.TxOut{
-				Value: 10000,
-			},
-		},
-		MaturityDelay: 2,
-	}
-
-	return &commitRes
 }
 
 func incubateTestOutput(t *testing.T, nursery *utxoNursery,

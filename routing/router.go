@@ -159,13 +159,7 @@ type PaymentSessionSource interface {
 	// routes to the given target. An optional set of routing hints can be
 	// provided in order to populate additional edges to explore when
 	// finding a path to the payment's destination.
-	NewPaymentSession(routeHints [][]zpay32.HopHint,
-		target route.Vertex) (PaymentSession, error)
-
-	// NewPaymentSessionForRoute creates a new paymentSession instance that
-	// is just used for failure reporting to missioncontrol, and will only
-	// attempt the given route.
-	NewPaymentSessionForRoute(preBuiltRoute *route.Route) PaymentSession
+	NewPaymentSession(p *LightningPayment) (PaymentSession, error)
 
 	// NewPaymentSessionEmpty creates a new paymentSession instance that is
 	// empty, and will be exhausted immediately. Used for failure reporting
@@ -532,23 +526,17 @@ func (r *ChannelRouter) Start() error {
 			// We create a dummy, empty payment session such that
 			// we won't make another payment attempt when the
 			// result for the in-flight attempt is received.
-			//
-			// PayAttemptTime doesn't need to be set, as there is
-			// only a single attempt.
 			paySession := r.cfg.SessionSource.NewPaymentSessionEmpty()
 
-			lPayment := &LightningPayment{
-				PaymentHash: payment.Info.PaymentHash,
-			}
-
-			// TODO(joostjager): For mpp, possibly relaunch multiple
-			// in-flight htlcs here.
-			var attempt *channeldb.HTLCAttemptInfo
-			if len(payment.Attempts) > 0 {
-				attempt = &payment.Attempts[0]
-			}
-
-			_, _, err := r.sendPayment(attempt, lPayment, paySession)
+			// We pass in a zero timeout value, to indicate we
+			// don't need it to timeout. It will stop immediately
+			// after the existing attempt has finished anyway. We
+			// also set a zero fee limit, as no more routes should
+			// be tried.
+			_, _, err := r.sendPayment(
+				payment.Info.Value, 0,
+				payment.Info.PaymentHash, 0, paySession,
+			)
 			if err != nil {
 				log.Errorf("Resuming payment with hash %v "+
 					"failed: %v.", payment.Info.PaymentHash, err)
@@ -1438,13 +1426,25 @@ func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 	// execute our path finding algorithm.
 	finalHtlcExpiry := currentHeight + int32(finalExpiry)
 
+	routingTx, err := newDbRoutingTx(r.cfg.Graph)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		err := routingTx.close()
+		if err != nil {
+			log.Errorf("Error closing db tx: %v", err)
+		}
+	}()
+
 	path, err := findPath(
 		&graphParams{
-			graph:           r.cfg.Graph,
-			bandwidthHints:  bandwidthHints,
 			additionalEdges: routeHints,
+			bandwidthHints:  bandwidthHints,
+			graph:           routingTx,
 		},
-		restrictions, &r.cfg.PathFindingConfig,
+		restrictions,
+		&r.cfg.PathFindingConfig,
 		source, target, amt, finalHtlcExpiry,
 	)
 	if err != nil {
@@ -1456,6 +1456,7 @@ func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 		source, path, uint32(currentHeight),
 		finalHopParams{
 			amt:       amt,
+			totalAmt:  amt,
 			cltvDelta: finalExpiry,
 			records:   destCustomRecords,
 		},
@@ -1593,9 +1594,9 @@ type LightningPayment struct {
 	// destination successfully.
 	RouteHints [][]zpay32.HopHint
 
-	// OutgoingChannelID is the channel that needs to be taken to the first
-	// hop. If nil, any channel may be used.
-	OutgoingChannelID *uint64
+	// OutgoingChannelIDs is the list of channels that are allowed for the
+	// first hop. If nil, any channel may be used.
+	OutgoingChannelIDs []uint64
 
 	// LastHop is the pubkey of the last node before the final destination
 	// is reached. If nil, any node may be used.
@@ -1623,6 +1624,10 @@ type LightningPayment struct {
 	// understand this new onion payload format, then the payment will
 	// fail.
 	DestCustomRecords record.CustomSet
+
+	// MaxParts is the maximum number of partial payments that may be used
+	// to complete the full amount.
+	MaxParts uint32
 }
 
 // SendPayment attempts to send a payment as described within the passed
@@ -1640,9 +1645,15 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte,
 		return [32]byte{}, nil, err
 	}
 
+	log.Tracef("Dispatching SendPayment for lightning payment: %v",
+		spewPayment(payment))
+
 	// Since this is the first time this payment is being made, we pass nil
 	// for the existing attempt.
-	return r.sendPayment(nil, payment, paySession)
+	return r.sendPayment(
+		payment.Amount, payment.FeeLimit, payment.PaymentHash,
+		payment.PayAttemptTimeout, paySession,
+	)
 }
 
 // SendPaymentAsync is the non-blocking version of SendPayment. The payment
@@ -1659,7 +1670,13 @@ func (r *ChannelRouter) SendPaymentAsync(payment *LightningPayment) error {
 	go func() {
 		defer r.wg.Done()
 
-		_, _, err := r.sendPayment(nil, payment, paySession)
+		log.Tracef("Dispatching SendPayment for lightning payment: %v",
+			spewPayment(payment))
+
+		_, _, err := r.sendPayment(
+			payment.Amount, payment.FeeLimit, payment.PaymentHash,
+			payment.PayAttemptTimeout, paySession,
+		)
 		if err != nil {
 			log.Errorf("Payment with hash %x failed: %v",
 				payment.PaymentHash, err)
@@ -1667,6 +1684,28 @@ func (r *ChannelRouter) SendPaymentAsync(payment *LightningPayment) error {
 	}()
 
 	return nil
+}
+
+// spewPayment returns a log closures that provides a spewed string
+// representation of the passed payment.
+func spewPayment(payment *LightningPayment) logClosure {
+	return newLogClosure(func() string {
+		// Make a copy of the payment with a nilled Curve
+		// before spewing.
+		var routeHints [][]zpay32.HopHint
+		for _, routeHint := range payment.RouteHints {
+			var hopHints []zpay32.HopHint
+			for _, hopHint := range routeHint {
+				h := hopHint.Copy()
+				h.NodeID.Curve = nil
+				hopHints = append(hopHints, h)
+			}
+			routeHints = append(routeHints, hopHints)
+		}
+		p := *payment
+		p.RouteHints = routeHints
+		return spew.Sdump(p)
+	})
 }
 
 // preparePayment creates the payment session and registers the payment with the
@@ -1677,9 +1716,7 @@ func (r *ChannelRouter) preparePayment(payment *LightningPayment) (
 	// Before starting the HTLC routing attempt, we'll create a fresh
 	// payment session which will report our errors back to mission
 	// control.
-	paySession, err := r.cfg.SessionSource.NewPaymentSession(
-		payment.RouteHints, payment.Target,
-	)
+	paySession, err := r.cfg.SessionSource.NewPaymentSession(payment)
 	if err != nil {
 		return nil, err
 	}
@@ -1704,16 +1741,23 @@ func (r *ChannelRouter) preparePayment(payment *LightningPayment) (
 }
 
 // SendToRoute attempts to send a payment with the given hash through the
-// provided route. This function is blocking and will return the obtained
-// preimage if the payment is successful or the full error in case of a failure.
-func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
-	lntypes.Preimage, error) {
-
-	// Create a payment session for just this route.
-	paySession := r.cfg.SessionSource.NewPaymentSessionForRoute(route)
+// provided route. This function is blocking and will return the attempt
+// information as it is stored in the database. For a successful htlc, this
+// information will contain the preimage. If an error occurs after the attempt
+// was initiated, both return values will be non-nil.
+func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
+	*channeldb.HTLCAttempt, error) {
 
 	// Calculate amount paid to receiver.
-	amt := route.TotalAmount - route.TotalFees()
+	amt := rt.ReceiverAmt()
+
+	// If this is meant as a MP payment shard, we set the amount
+	// for the creating info to the total amount of the payment.
+	finalHop := rt.Hops[len(rt.Hops)-1]
+	mpp := finalHop.MPP
+	if mpp != nil {
+		amt = mpp.TotalMsat()
+	}
 
 	// Record this payment hash with the ControlTower, ensuring it is not
 	// already in-flight.
@@ -1725,50 +1769,103 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 	}
 
 	err := r.cfg.Control.InitPayment(hash, info)
-	if err != nil {
-		return [32]byte{}, err
+	switch {
+	// If this is an MPP attempt and the hash is already registered with
+	// the database, we can go on to launch the shard.
+	case err == channeldb.ErrPaymentInFlight && mpp != nil:
+
+	// Any other error is not tolerated.
+	case err != nil:
+		return nil, err
 	}
 
-	// Create a (mostly) dummy payment, as the created payment session is
-	// not going to do path finding.
-	// TODO(halseth): sendPayment doesn't really need LightningPayment, make
-	// it take just needed fields instead.
-	//
-	// PayAttemptTime doesn't need to be set, as there is only a single
-	// attempt.
-	payment := &LightningPayment{
-		PaymentHash: hash,
+	log.Tracef("Dispatching SendToRoute for hash %v: %v",
+		hash, newLogClosure(func() string {
+			return spew.Sdump(rt)
+		}),
+	)
+
+	// Launch a shard along the given route.
+	sh := &shardHandler{
+		router:      r,
+		paymentHash: hash,
 	}
 
-	// Since this is the first time this payment is being made, we pass nil
-	// for the existing attempt.
-	preimage, _, err := r.sendPayment(nil, payment, paySession)
-	if err != nil {
-		// SendToRoute should return a structured error. In case the
-		// provided route fails, payment lifecycle will return a
-		// noRouteError with the structured error embedded.
-		if noRouteError, ok := err.(errNoRoute); ok {
-			if noRouteError.lastError == nil {
-				return lntypes.Preimage{},
-					errors.New("failure message missing")
-			}
+	var shardError error
+	attempt, outcome, err := sh.launchShard(rt)
 
-			return lntypes.Preimage{}, noRouteError.lastError
+	// With SendToRoute, it can happen that the route exceeds protocol
+	// constraints. Mark the payment as failed with an internal error.
+	if err == route.ErrMaxRouteHopsExceeded ||
+		err == sphinx.ErrMaxRoutingInfoSizeExceeded {
+
+		log.Debugf("Invalid route provided for payment %x: %v",
+			hash, err)
+
+		controlErr := r.cfg.Control.Fail(
+			hash, channeldb.FailureReasonError,
+		)
+		if controlErr != nil {
+			return nil, controlErr
+		}
+	}
+
+	// In any case, don't continue if there is an error.
+	if err != nil {
+		return nil, err
+	}
+
+	var htlcAttempt *channeldb.HTLCAttempt
+	switch {
+	// Failed to launch shard.
+	case outcome.err != nil:
+		shardError = outcome.err
+		htlcAttempt = outcome.attempt
+
+	// Shard successfully launched, wait for the result to be available.
+	default:
+		result, err := sh.collectResult(attempt)
+		if err != nil {
+			return nil, err
 		}
 
-		return lntypes.Preimage{}, err
+		// We got a successful result.
+		if result.err == nil {
+			return result.attempt, nil
+		}
+
+		// The shard failed, break switch to handle it.
+		shardError = result.err
+		htlcAttempt = result.attempt
 	}
 
-	return preimage, nil
+	// Since for SendToRoute we won't retry in case the shard fails, we'll
+	// mark the payment failed with the control tower immediately. Process
+	// the error to check if it maps into a terminal error code, if not use
+	// a generic NO_ROUTE error.
+	reason := r.processSendError(
+		attempt.AttemptID, &attempt.Route, shardError,
+	)
+	if reason == nil {
+		r := channeldb.FailureReasonNoRoute
+		reason = &r
+	}
+
+	err = r.cfg.Control.Fail(hash, *reason)
+	if err != nil {
+		return nil, err
+	}
+
+	return htlcAttempt, shardError
 }
 
-// sendPayment attempts to send a payment as described within the passed
-// LightningPayment. This function is blocking and will return either: when the
-// payment is successful, or all candidates routes have been attempted and
-// resulted in a failed payment. If the payment succeeds, then a non-nil Route
-// will be returned which describes the path the successful payment traversed
-// within the network to reach the destination. Additionally, the payment
-// preimage will also be returned.
+// sendPayment attempts to send a payment to the passed payment hash. This
+// function is blocking and will return either: when the payment is successful,
+// or all candidates routes have been attempted and resulted in a failed
+// payment. If the payment succeeds, then a non-nil Route will be returned
+// which describes the path the successful payment traversed within the network
+// to reach the destination. Additionally, the payment preimage will also be
+// returned.
 //
 // The existing attempt argument should be set to nil if this is a payment that
 // haven't had any payment attempt sent to the switch yet. If it has had an
@@ -1779,29 +1876,9 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
 func (r *ChannelRouter) sendPayment(
-	existingAttempt *channeldb.HTLCAttemptInfo,
-	payment *LightningPayment, paySession PaymentSession) (
-	[32]byte, *route.Route, error) {
-
-	log.Tracef("Dispatching route for lightning payment: %v",
-		newLogClosure(func() string {
-			// Make a copy of the payment with a nilled Curve
-			// before spewing.
-			var routeHints [][]zpay32.HopHint
-			for _, routeHint := range payment.RouteHints {
-				var hopHints []zpay32.HopHint
-				for _, hopHint := range routeHint {
-					h := hopHint.Copy()
-					h.NodeID.Curve = nil
-					hopHints = append(hopHints, h)
-				}
-				routeHints = append(routeHints, hopHints)
-			}
-			p := *payment
-			p.RouteHints = routeHints
-			return spew.Sdump(p)
-		}),
-	)
+	totalAmt, feeLimit lnwire.MilliSatoshi, paymentHash lntypes.Hash,
+	timeout time.Duration,
+	paySession PaymentSession) ([32]byte, *route.Route, error) {
 
 	// We'll also fetch the current block height so we can properly
 	// calculate the required HTLC time locks within the route.
@@ -1813,21 +1890,19 @@ func (r *ChannelRouter) sendPayment(
 	// Now set up a paymentLifecycle struct with these params, such that we
 	// can resume the payment from the current state.
 	p := &paymentLifecycle{
-		router:         r,
-		payment:        payment,
-		paySession:     paySession,
-		currentHeight:  currentHeight,
-		finalCLTVDelta: uint16(payment.FinalCLTVDelta),
-		attempt:        existingAttempt,
-		circuit:        nil,
-		lastError:      nil,
+		router:        r,
+		totalAmount:   totalAmt,
+		feeLimit:      feeLimit,
+		paymentHash:   paymentHash,
+		paySession:    paySession,
+		currentHeight: currentHeight,
 	}
 
 	// If a timeout is specified, create a timeout channel. If no timeout is
 	// specified, the channel is left nil and will never abort the payment
 	// loop.
-	if payment.PayAttemptTimeout != 0 {
-		p.timeoutChan = time.After(payment.PayAttemptTimeout)
+	if timeout != 0 {
+		p.timeoutChan = time.After(timeout)
 	}
 
 	return p.resumePayment()
@@ -2111,7 +2186,7 @@ func (r *ChannelRouter) FetchLightningNode(node route.Vertex) (*channeldb.Lightn
 //
 // NOTE: This method is part of the ChannelGraphSource interface.
 func (r *ChannelRouter) ForEachNode(cb func(*channeldb.LightningNode) error) error {
-	return r.cfg.Graph.ForEachNode(nil, func(_ kvdb.ReadTx, n *channeldb.LightningNode) error {
+	return r.cfg.Graph.ForEachNode(func(_ kvdb.RTx, n *channeldb.LightningNode) error {
 		return cb(n)
 	})
 }
@@ -2123,11 +2198,11 @@ func (r *ChannelRouter) ForEachNode(cb func(*channeldb.LightningNode) error) err
 func (r *ChannelRouter) ForAllOutgoingChannels(cb func(*channeldb.ChannelEdgeInfo,
 	*channeldb.ChannelEdgePolicy) error) error {
 
-	return r.selfNode.ForEachChannel(nil, func(_ kvdb.ReadTx, c *channeldb.ChannelEdgeInfo,
+	return r.selfNode.ForEachChannel(nil, func(_ kvdb.RTx, c *channeldb.ChannelEdgeInfo,
 		e, _ *channeldb.ChannelEdgePolicy) error {
 
 		if e == nil {
-			return fmt.Errorf("Channel from self node has no policy")
+			return fmt.Errorf("channel from self node has no policy")
 		}
 
 		return cb(c, e)
@@ -2264,7 +2339,7 @@ func generateBandwidthHints(sourceNode *channeldb.LightningNode,
 	// First, we'll collect the set of outbound edges from the target
 	// source node.
 	var localChans []*channeldb.ChannelEdgeInfo
-	err := sourceNode.ForEachChannel(nil, func(tx kvdb.ReadTx,
+	err := sourceNode.ForEachChannel(nil, func(tx kvdb.RTx,
 		edgeInfo *channeldb.ChannelEdgeInfo,
 		_, _ *channeldb.ChannelEdgePolicy) error {
 
@@ -2308,6 +2383,13 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 
 	log.Tracef("BuildRoute called: hopsCount=%v, amt=%v",
 		len(hops), amt)
+
+	var outgoingChans map[uint64]struct{}
+	if outgoingChan != nil {
+		outgoingChans = map[uint64]struct{}{
+			*outgoingChan: {},
+		}
+	}
 
 	// If no amount is specified, we need to build a route for the minimum
 	// amount that this route can carry.
@@ -2374,7 +2456,7 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 
 		// Build unified policies for this hop based on the channels
 		// known in the graph.
-		u := newUnifiedPolicies(source, toNode, outgoingChan)
+		u := newUnifiedPolicies(source, toNode, outgoingChans)
 
 		err := u.addGraphPolicies(routingTx)
 		if err != nil {
@@ -2448,6 +2530,7 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 		source, pathEdges, uint32(height),
 		finalHopParams{
 			amt:       receiverAmt,
+			totalAmt:  receiverAmt,
 			cltvDelta: uint16(finalCltvDelta),
 			records:   nil,
 		},

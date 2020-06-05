@@ -41,9 +41,9 @@ jobs:
       script:
         - make rpc-check
         - make unit pkg=... case=_NONE_
-        - make lint
+        - make lint workers=1
         - make btcd
-        - LNDBUILDSYS=windows-amd64 bash ./build/release/release.sh
+        - make release sys=windows-amd64
     - stage: Test
       script: make travis-cover
       name: Unit Cover

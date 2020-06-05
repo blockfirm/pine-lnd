@@ -7,7 +7,7 @@ import "time"
 const (
 	// MinerMempoolTimeout is the max time we will wait for a transaction
 	// to propagate to the mining node's mempool.
-	MinerMempoolTimeout = time.Second * 30
+	MinerMempoolTimeout = time.Minute
 
 	// ChannelOpenTimeout is the max time we will wait before a channel to
 	// be considered opened.
@@ -23,5 +23,5 @@ const (
 
 	// AsyncBenchmarkTimeout is the timeout used when running the async
 	// payments benchmark.
-	AsyncBenchmarkTimeout = time.Minute
+	AsyncBenchmarkTimeout = 2 * time.Minute
 )

@@ -185,12 +185,17 @@ func maybeTweakPrivKey(signDesc *input.SignDescriptor,
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) ([]byte, error) {
+	signDesc *input.SignDescriptor) (input.Signature, error) {
 
-	return pine.SignOutputRaw(
+	sig, err := pine.SignOutputRaw(
 		serializers.SerializeMsgTx(tx),
 		serializers.SerializeSignDescriptor(signDesc),
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	return btcec.ParseDERSignature(sig, btcec.S256())
 }
 
 // ComputeInputScript generates a complete InputScript for the passed
@@ -227,7 +232,7 @@ var _ input.Signer = (*BtcWallet)(nil)
 //
 // NOTE: This is a part of the MessageSigner interface.
 func (b *BtcWallet) SignMessage(pubKey *btcec.PublicKey,
-	msg []byte) (*btcec.Signature, error) {
+	msg []byte) (input.Signature, error) {
 	return pine.SignMessage(pubKey, msg)
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/lightningnetwork/lnd/brontide"
+	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/watchtower/lookout"
 	"github.com/lightningnetwork/lnd/watchtower/wtserver"
 )
@@ -71,7 +72,7 @@ func New(cfg *Config) (*Standalone, error) {
 	listeners := make([]net.Listener, 0, len(cfg.ListenAddrs))
 	for _, listenAddr := range cfg.ListenAddrs {
 		listener, err := brontide.NewListener(
-			cfg.NodePrivKey, listenAddr.String(),
+			cfg.NodeKeyECDH, listenAddr.String(),
 		)
 		if err != nil {
 			return nil, err
@@ -84,7 +85,7 @@ func New(cfg *Config) (*Standalone, error) {
 	server, err := wtserver.New(&wtserver.Config{
 		ChainHash:     cfg.ChainHash,
 		DB:            cfg.DB,
-		NodePrivKey:   cfg.NodePrivKey,
+		NodeKeyECDH:   cfg.NodeKeyECDH,
 		Listeners:     listeners,
 		ReadTimeout:   cfg.ReadTimeout,
 		WriteTimeout:  cfg.WriteTimeout,
@@ -111,6 +112,15 @@ func (w *Standalone) Start() error {
 	}
 
 	log.Infof("Starting watchtower")
+
+	// If a tor controller exists in the config, then automatically create a
+	// hidden service for the watchtower to accept inbound connections from.
+	if w.cfg.TorController != nil {
+		log.Infof("Creating watchtower hidden service")
+		if err := w.createNewHiddenService(); err != nil {
+			return err
+		}
+	}
 
 	if err := w.lookout.Start(); err != nil {
 		return err
@@ -142,12 +152,45 @@ func (w *Standalone) Stop() error {
 	return nil
 }
 
+// createNewHiddenService automatically sets up a v2 or v3 onion service in
+// order to listen for inbound connections over Tor.
+func (w *Standalone) createNewHiddenService() error {
+	// Get all the ports the watchtower is listening on. These will be used to
+	// map the hidden service's virtual port.
+	listenPorts := make([]int, 0, len(w.listeners))
+	for _, listener := range w.listeners {
+		port := listener.Addr().(*net.TCPAddr).Port
+		listenPorts = append(listenPorts, port)
+	}
+
+	// Once we've created the port mapping, we can automatically create the
+	// hidden service. The service's private key will be saved on disk in order
+	// to persistently have access to this hidden service across restarts.
+	onionCfg := tor.AddOnionConfig{
+		VirtualPort: DefaultPeerPort,
+		TargetPorts: listenPorts,
+		Store:       tor.NewOnionFile(w.cfg.WatchtowerKeyPath, 0600),
+		Type:        w.cfg.Type,
+	}
+
+	addr, err := w.cfg.TorController.AddOnion(onionCfg)
+	if err != nil {
+		return err
+	}
+
+	// Append this address to ExternalIPs so that it will be exposed in
+	// tower info calls.
+	w.cfg.ExternalIPs = append(w.cfg.ExternalIPs, addr)
+
+	return nil
+}
+
 // PubKey returns the public key for the watchtower used to authentication and
 // encrypt traffic with clients.
 //
 // NOTE: Part of the watchtowerrpc.WatchtowerBackend interface.
 func (w *Standalone) PubKey() *btcec.PublicKey {
-	return w.cfg.NodePrivKey.PubKey()
+	return w.cfg.NodeKeyECDH.PubKey()
 }
 
 // ListeningAddrs returns the listening addresses where the watchtower server
@@ -169,9 +212,7 @@ func (w *Standalone) ListeningAddrs() []net.Addr {
 // NOTE: Part of the watchtowerrpc.WatchtowerBackend interface.
 func (w *Standalone) ExternalIPs() []net.Addr {
 	addrs := make([]net.Addr, 0, len(w.cfg.ExternalIPs))
-	for _, addr := range w.cfg.ExternalIPs {
-		addrs = append(addrs, addr)
-	}
+	addrs = append(addrs, w.cfg.ExternalIPs...)
 
 	return addrs
 }

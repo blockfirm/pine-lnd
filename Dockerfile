@@ -18,7 +18,7 @@ RUN apk add --no-cache --update alpine-sdk \
 &&  cd /go/src/github.com/lightningnetwork/lnd \
 &&  git checkout $checkout \
 &&  make \
-&&  make install tags="signrpc walletrpc chainrpc invoicesrpc routerrpc"
+&&  make install tags="signrpc walletrpc chainrpc invoicesrpc"
 
 # Start a new, final image.
 FROM alpine as final
@@ -26,9 +26,10 @@ FROM alpine as final
 # Define a root volume for data persistence.
 VOLUME /root/.lnd
 
-# Add bash and ca-certs, for quality of life and SSL-related reasons.
+# Add bash, jq and ca-certs, for quality of life and SSL-related reasons.
 RUN apk --no-cache add \
     bash \
+    jq \
     ca-certificates
 
 # Copy the binaries from the builder image.

@@ -842,15 +842,16 @@ func (c *ChannelArbitrator) stateStep(
 		// With the close transaction in hand, broadcast the
 		// transaction to the network, thereby entering the post
 		// channel resolution state.
-		log.Infof("Broadcasting force close transaction, "+
-			"ChannelPoint(%v): %v", c.cfg.ChanPoint,
+		log.Infof("Broadcasting force close transaction %v, "+
+			"ChannelPoint(%v): %v", closeTx.TxHash(),
+			c.cfg.ChanPoint,
 			newLogClosure(func() string {
 				return spew.Sdump(closeTx)
 			}))
 
 		// At this point, we'll now broadcast the commitment
 		// transaction itself.
-		if err := c.cfg.PublishTx(closeTx); err != nil {
+		if err := c.cfg.PublishTx(closeTx, ""); err != nil {
 			log.Errorf("ChannelArbitrator(%v): unable to broadcast "+
 				"close tx: %v", c.cfg.ChanPoint, err)
 			if err != lnwallet.ErrDoubleSpend {
@@ -1456,8 +1457,7 @@ func (c *ChannelArbitrator) isPreimageAvailable(hash lntypes.Hash) (bool,
 		return false, err
 	}
 
-	preimageAvailable = invoice.Terms.PaymentPreimage !=
-		channeldb.UnknownPreimage
+	preimageAvailable = invoice.Terms.PaymentPreimage != nil
 
 	return preimageAvailable, nil
 }
