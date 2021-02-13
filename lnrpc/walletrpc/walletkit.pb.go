@@ -10,6 +10,8 @@ import (
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	signrpc "github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	grpc "google.golang.org/grpc"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
 	math "math"
 )
 
@@ -132,6 +134,267 @@ func (WitnessType) EnumDescriptor() ([]byte, []int) {
 	return fileDescriptor_6cc6942ac78249e5, []int{0}
 }
 
+type ListUnspentRequest struct {
+	// The minimum number of confirmations to be included.
+	MinConfs int32 `protobuf:"varint,1,opt,name=min_confs,json=minConfs,proto3" json:"min_confs,omitempty"`
+	// The maximum number of confirmations to be included.
+	MaxConfs             int32    `protobuf:"varint,2,opt,name=max_confs,json=maxConfs,proto3" json:"max_confs,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *ListUnspentRequest) Reset()         { *m = ListUnspentRequest{} }
+func (m *ListUnspentRequest) String() string { return proto.CompactTextString(m) }
+func (*ListUnspentRequest) ProtoMessage()    {}
+func (*ListUnspentRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{0}
+}
+
+func (m *ListUnspentRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_ListUnspentRequest.Unmarshal(m, b)
+}
+func (m *ListUnspentRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_ListUnspentRequest.Marshal(b, m, deterministic)
+}
+func (m *ListUnspentRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ListUnspentRequest.Merge(m, src)
+}
+func (m *ListUnspentRequest) XXX_Size() int {
+	return xxx_messageInfo_ListUnspentRequest.Size(m)
+}
+func (m *ListUnspentRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_ListUnspentRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ListUnspentRequest proto.InternalMessageInfo
+
+func (m *ListUnspentRequest) GetMinConfs() int32 {
+	if m != nil {
+		return m.MinConfs
+	}
+	return 0
+}
+
+func (m *ListUnspentRequest) GetMaxConfs() int32 {
+	if m != nil {
+		return m.MaxConfs
+	}
+	return 0
+}
+
+type ListUnspentResponse struct {
+	// A list of utxos satisfying the specified number of confirmations.
+	Utxos                []*lnrpc.Utxo `protobuf:"bytes,1,rep,name=utxos,proto3" json:"utxos,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}      `json:"-"`
+	XXX_unrecognized     []byte        `json:"-"`
+	XXX_sizecache        int32         `json:"-"`
+}
+
+func (m *ListUnspentResponse) Reset()         { *m = ListUnspentResponse{} }
+func (m *ListUnspentResponse) String() string { return proto.CompactTextString(m) }
+func (*ListUnspentResponse) ProtoMessage()    {}
+func (*ListUnspentResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{1}
+}
+
+func (m *ListUnspentResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_ListUnspentResponse.Unmarshal(m, b)
+}
+func (m *ListUnspentResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_ListUnspentResponse.Marshal(b, m, deterministic)
+}
+func (m *ListUnspentResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ListUnspentResponse.Merge(m, src)
+}
+func (m *ListUnspentResponse) XXX_Size() int {
+	return xxx_messageInfo_ListUnspentResponse.Size(m)
+}
+func (m *ListUnspentResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_ListUnspentResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ListUnspentResponse proto.InternalMessageInfo
+
+func (m *ListUnspentResponse) GetUtxos() []*lnrpc.Utxo {
+	if m != nil {
+		return m.Utxos
+	}
+	return nil
+}
+
+type LeaseOutputRequest struct {
+	//
+	//An ID of 32 random bytes that must be unique for each distinct application
+	//using this RPC which will be used to bound the output lease to.
+	Id []byte `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The identifying outpoint of the output being leased.
+	Outpoint             *lnrpc.OutPoint `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}        `json:"-"`
+	XXX_unrecognized     []byte          `json:"-"`
+	XXX_sizecache        int32           `json:"-"`
+}
+
+func (m *LeaseOutputRequest) Reset()         { *m = LeaseOutputRequest{} }
+func (m *LeaseOutputRequest) String() string { return proto.CompactTextString(m) }
+func (*LeaseOutputRequest) ProtoMessage()    {}
+func (*LeaseOutputRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{2}
+}
+
+func (m *LeaseOutputRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_LeaseOutputRequest.Unmarshal(m, b)
+}
+func (m *LeaseOutputRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_LeaseOutputRequest.Marshal(b, m, deterministic)
+}
+func (m *LeaseOutputRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_LeaseOutputRequest.Merge(m, src)
+}
+func (m *LeaseOutputRequest) XXX_Size() int {
+	return xxx_messageInfo_LeaseOutputRequest.Size(m)
+}
+func (m *LeaseOutputRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_LeaseOutputRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_LeaseOutputRequest proto.InternalMessageInfo
+
+func (m *LeaseOutputRequest) GetId() []byte {
+	if m != nil {
+		return m.Id
+	}
+	return nil
+}
+
+func (m *LeaseOutputRequest) GetOutpoint() *lnrpc.OutPoint {
+	if m != nil {
+		return m.Outpoint
+	}
+	return nil
+}
+
+type LeaseOutputResponse struct {
+	//
+	//The absolute expiration of the output lease represented as a unix timestamp.
+	Expiration           uint64   `protobuf:"varint,1,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *LeaseOutputResponse) Reset()         { *m = LeaseOutputResponse{} }
+func (m *LeaseOutputResponse) String() string { return proto.CompactTextString(m) }
+func (*LeaseOutputResponse) ProtoMessage()    {}
+func (*LeaseOutputResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{3}
+}
+
+func (m *LeaseOutputResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_LeaseOutputResponse.Unmarshal(m, b)
+}
+func (m *LeaseOutputResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_LeaseOutputResponse.Marshal(b, m, deterministic)
+}
+func (m *LeaseOutputResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_LeaseOutputResponse.Merge(m, src)
+}
+func (m *LeaseOutputResponse) XXX_Size() int {
+	return xxx_messageInfo_LeaseOutputResponse.Size(m)
+}
+func (m *LeaseOutputResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_LeaseOutputResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_LeaseOutputResponse proto.InternalMessageInfo
+
+func (m *LeaseOutputResponse) GetExpiration() uint64 {
+	if m != nil {
+		return m.Expiration
+	}
+	return 0
+}
+
+type ReleaseOutputRequest struct {
+	// The unique ID that was used to lock the output.
+	Id []byte `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The identifying outpoint of the output being released.
+	Outpoint             *lnrpc.OutPoint `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}        `json:"-"`
+	XXX_unrecognized     []byte          `json:"-"`
+	XXX_sizecache        int32           `json:"-"`
+}
+
+func (m *ReleaseOutputRequest) Reset()         { *m = ReleaseOutputRequest{} }
+func (m *ReleaseOutputRequest) String() string { return proto.CompactTextString(m) }
+func (*ReleaseOutputRequest) ProtoMessage()    {}
+func (*ReleaseOutputRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{4}
+}
+
+func (m *ReleaseOutputRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_ReleaseOutputRequest.Unmarshal(m, b)
+}
+func (m *ReleaseOutputRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_ReleaseOutputRequest.Marshal(b, m, deterministic)
+}
+func (m *ReleaseOutputRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ReleaseOutputRequest.Merge(m, src)
+}
+func (m *ReleaseOutputRequest) XXX_Size() int {
+	return xxx_messageInfo_ReleaseOutputRequest.Size(m)
+}
+func (m *ReleaseOutputRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_ReleaseOutputRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ReleaseOutputRequest proto.InternalMessageInfo
+
+func (m *ReleaseOutputRequest) GetId() []byte {
+	if m != nil {
+		return m.Id
+	}
+	return nil
+}
+
+func (m *ReleaseOutputRequest) GetOutpoint() *lnrpc.OutPoint {
+	if m != nil {
+		return m.Outpoint
+	}
+	return nil
+}
+
+type ReleaseOutputResponse struct {
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *ReleaseOutputResponse) Reset()         { *m = ReleaseOutputResponse{} }
+func (m *ReleaseOutputResponse) String() string { return proto.CompactTextString(m) }
+func (*ReleaseOutputResponse) ProtoMessage()    {}
+func (*ReleaseOutputResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{5}
+}
+
+func (m *ReleaseOutputResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_ReleaseOutputResponse.Unmarshal(m, b)
+}
+func (m *ReleaseOutputResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_ReleaseOutputResponse.Marshal(b, m, deterministic)
+}
+func (m *ReleaseOutputResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ReleaseOutputResponse.Merge(m, src)
+}
+func (m *ReleaseOutputResponse) XXX_Size() int {
+	return xxx_messageInfo_ReleaseOutputResponse.Size(m)
+}
+func (m *ReleaseOutputResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_ReleaseOutputResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ReleaseOutputResponse proto.InternalMessageInfo
+
 type KeyReq struct {
 	//
 	//Is the key finger print of the root pubkey that this request is targeting.
@@ -151,7 +414,7 @@ func (m *KeyReq) Reset()         { *m = KeyReq{} }
 func (m *KeyReq) String() string { return proto.CompactTextString(m) }
 func (*KeyReq) ProtoMessage()    {}
 func (*KeyReq) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{0}
+	return fileDescriptor_6cc6942ac78249e5, []int{6}
 }
 
 func (m *KeyReq) XXX_Unmarshal(b []byte) error {
@@ -196,7 +459,7 @@ func (m *AddrRequest) Reset()         { *m = AddrRequest{} }
 func (m *AddrRequest) String() string { return proto.CompactTextString(m) }
 func (*AddrRequest) ProtoMessage()    {}
 func (*AddrRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{1}
+	return fileDescriptor_6cc6942ac78249e5, []int{7}
 }
 
 func (m *AddrRequest) XXX_Unmarshal(b []byte) error {
@@ -230,7 +493,7 @@ func (m *AddrResponse) Reset()         { *m = AddrResponse{} }
 func (m *AddrResponse) String() string { return proto.CompactTextString(m) }
 func (*AddrResponse) ProtoMessage()    {}
 func (*AddrResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{2}
+	return fileDescriptor_6cc6942ac78249e5, []int{8}
 }
 
 func (m *AddrResponse) XXX_Unmarshal(b []byte) error {
@@ -274,7 +537,7 @@ func (m *Transaction) Reset()         { *m = Transaction{} }
 func (m *Transaction) String() string { return proto.CompactTextString(m) }
 func (*Transaction) ProtoMessage()    {}
 func (*Transaction) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{3}
+	return fileDescriptor_6cc6942ac78249e5, []int{9}
 }
 
 func (m *Transaction) XXX_Unmarshal(b []byte) error {
@@ -326,7 +589,7 @@ func (m *PublishResponse) Reset()         { *m = PublishResponse{} }
 func (m *PublishResponse) String() string { return proto.CompactTextString(m) }
 func (*PublishResponse) ProtoMessage()    {}
 func (*PublishResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{4}
+	return fileDescriptor_6cc6942ac78249e5, []int{10}
 }
 
 func (m *PublishResponse) XXX_Unmarshal(b []byte) error {
@@ -363,7 +626,12 @@ type SendOutputsRequest struct {
 	//A slice of the outputs that should be created in the transaction produced.
 	Outputs []*signrpc.TxOut `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty"`
 	// An optional label for the transaction, limited to 500 characters.
-	Label                string   `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	Label string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	// The minimum number of confirmations each one of your outputs used for
+	// the transaction must satisfy.
+	MinConfs int32 `protobuf:"varint,4,opt,name=min_confs,json=minConfs,proto3" json:"min_confs,omitempty"`
+	// Whether unconfirmed outputs should be used as inputs for the transaction.
+	SpendUnconfirmed     bool     `protobuf:"varint,5,opt,name=spend_unconfirmed,json=spendUnconfirmed,proto3" json:"spend_unconfirmed,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`
@@ -373,7 +641,7 @@ func (m *SendOutputsRequest) Reset()         { *m = SendOutputsRequest{} }
 func (m *SendOutputsRequest) String() string { return proto.CompactTextString(m) }
 func (*SendOutputsRequest) ProtoMessage()    {}
 func (*SendOutputsRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{5}
+	return fileDescriptor_6cc6942ac78249e5, []int{11}
 }
 
 func (m *SendOutputsRequest) XXX_Unmarshal(b []byte) error {
@@ -415,6 +683,20 @@ func (m *SendOutputsRequest) GetLabel() string {
 	return ""
 }
 
+func (m *SendOutputsRequest) GetMinConfs() int32 {
+	if m != nil {
+		return m.MinConfs
+	}
+	return 0
+}
+
+func (m *SendOutputsRequest) GetSpendUnconfirmed() bool {
+	if m != nil {
+		return m.SpendUnconfirmed
+	}
+	return false
+}
+
 type SendOutputsResponse struct {
 	//
 	//The serialized transaction sent out on the network.
@@ -428,7 +710,7 @@ func (m *SendOutputsResponse) Reset()         { *m = SendOutputsResponse{} }
 func (m *SendOutputsResponse) String() string { return proto.CompactTextString(m) }
 func (*SendOutputsResponse) ProtoMessage()    {}
 func (*SendOutputsResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{6}
+	return fileDescriptor_6cc6942ac78249e5, []int{12}
 }
 
 func (m *SendOutputsResponse) XXX_Unmarshal(b []byte) error {
@@ -469,7 +751,7 @@ func (m *EstimateFeeRequest) Reset()         { *m = EstimateFeeRequest{} }
 func (m *EstimateFeeRequest) String() string { return proto.CompactTextString(m) }
 func (*EstimateFeeRequest) ProtoMessage()    {}
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{7}
+	return fileDescriptor_6cc6942ac78249e5, []int{13}
 }
 
 func (m *EstimateFeeRequest) XXX_Unmarshal(b []byte) error {
@@ -511,7 +793,7 @@ func (m *EstimateFeeResponse) Reset()         { *m = EstimateFeeResponse{} }
 func (m *EstimateFeeResponse) String() string { return proto.CompactTextString(m) }
 func (*EstimateFeeResponse) ProtoMessage()    {}
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{8}
+	return fileDescriptor_6cc6942ac78249e5, []int{14}
 }
 
 func (m *EstimateFeeResponse) XXX_Unmarshal(b []byte) error {
@@ -574,7 +856,7 @@ func (m *PendingSweep) Reset()         { *m = PendingSweep{} }
 func (m *PendingSweep) String() string { return proto.CompactTextString(m) }
 func (*PendingSweep) ProtoMessage()    {}
 func (*PendingSweep) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{9}
+	return fileDescriptor_6cc6942ac78249e5, []int{15}
 }
 
 func (m *PendingSweep) XXX_Unmarshal(b []byte) error {
@@ -668,7 +950,7 @@ func (m *PendingSweepsRequest) Reset()         { *m = PendingSweepsRequest{} }
 func (m *PendingSweepsRequest) String() string { return proto.CompactTextString(m) }
 func (*PendingSweepsRequest) ProtoMessage()    {}
 func (*PendingSweepsRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{10}
+	return fileDescriptor_6cc6942ac78249e5, []int{16}
 }
 
 func (m *PendingSweepsRequest) XXX_Unmarshal(b []byte) error {
@@ -702,7 +984,7 @@ func (m *PendingSweepsResponse) Reset()         { *m = PendingSweepsResponse{} }
 func (m *PendingSweepsResponse) String() string { return proto.CompactTextString(m) }
 func (*PendingSweepsResponse) ProtoMessage()    {}
 func (*PendingSweepsResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{11}
+	return fileDescriptor_6cc6942ac78249e5, []int{17}
 }
 
 func (m *PendingSweepsResponse) XXX_Unmarshal(b []byte) error {
@@ -752,7 +1034,7 @@ func (m *BumpFeeRequest) Reset()         { *m = BumpFeeRequest{} }
 func (m *BumpFeeRequest) String() string { return proto.CompactTextString(m) }
 func (*BumpFeeRequest) ProtoMessage()    {}
 func (*BumpFeeRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{12}
+	return fileDescriptor_6cc6942ac78249e5, []int{18}
 }
 
 func (m *BumpFeeRequest) XXX_Unmarshal(b []byte) error {
@@ -811,7 +1093,7 @@ func (m *BumpFeeResponse) Reset()         { *m = BumpFeeResponse{} }
 func (m *BumpFeeResponse) String() string { return proto.CompactTextString(m) }
 func (*BumpFeeResponse) ProtoMessage()    {}
 func (*BumpFeeResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{13}
+	return fileDescriptor_6cc6942ac78249e5, []int{19}
 }
 
 func (m *BumpFeeResponse) XXX_Unmarshal(b []byte) error {
@@ -835,7 +1117,8 @@ var xxx_messageInfo_BumpFeeResponse proto.InternalMessageInfo
 type ListSweepsRequest struct {
 	//
 	//Retrieve the full sweep transaction details. If false, only the sweep txids
-	//will be returned.
+	//will be returned. Note that some sweeps that LND publishes will have been
+	//replaced-by-fee, so will not be included in this output.
 	Verbose              bool     `protobuf:"varint,1,opt,name=verbose,proto3" json:"verbose,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
@@ -846,7 +1129,7 @@ func (m *ListSweepsRequest) Reset()         { *m = ListSweepsRequest{} }
 func (m *ListSweepsRequest) String() string { return proto.CompactTextString(m) }
 func (*ListSweepsRequest) ProtoMessage()    {}
 func (*ListSweepsRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{14}
+	return fileDescriptor_6cc6942ac78249e5, []int{20}
 }
 
 func (m *ListSweepsRequest) XXX_Unmarshal(b []byte) error {
@@ -888,7 +1171,7 @@ func (m *ListSweepsResponse) Reset()         { *m = ListSweepsResponse{} }
 func (m *ListSweepsResponse) String() string { return proto.CompactTextString(m) }
 func (*ListSweepsResponse) ProtoMessage()    {}
 func (*ListSweepsResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{15}
+	return fileDescriptor_6cc6942ac78249e5, []int{21}
 }
 
 func (m *ListSweepsResponse) XXX_Unmarshal(b []byte) error {
@@ -969,7 +1252,7 @@ func (m *ListSweepsResponse_TransactionIDs) Reset()         { *m = ListSweepsRes
 func (m *ListSweepsResponse_TransactionIDs) String() string { return proto.CompactTextString(m) }
 func (*ListSweepsResponse_TransactionIDs) ProtoMessage()    {}
 func (*ListSweepsResponse_TransactionIDs) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{15, 0}
+	return fileDescriptor_6cc6942ac78249e5, []int{21, 0}
 }
 
 func (m *ListSweepsResponse_TransactionIDs) XXX_Unmarshal(b []byte) error {
@@ -1013,7 +1296,7 @@ func (m *LabelTransactionRequest) Reset()         { *m = LabelTransactionRequest
 func (m *LabelTransactionRequest) String() string { return proto.CompactTextString(m) }
 func (*LabelTransactionRequest) ProtoMessage()    {}
 func (*LabelTransactionRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{16}
+	return fileDescriptor_6cc6942ac78249e5, []int{22}
 }
 
 func (m *LabelTransactionRequest) XXX_Unmarshal(b []byte) error {
@@ -1065,7 +1348,7 @@ func (m *LabelTransactionResponse) Reset()         { *m = LabelTransactionRespon
 func (m *LabelTransactionResponse) String() string { return proto.CompactTextString(m) }
 func (*LabelTransactionResponse) ProtoMessage()    {}
 func (*LabelTransactionResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_6cc6942ac78249e5, []int{17}
+	return fileDescriptor_6cc6942ac78249e5, []int{23}
 }
 
 func (m *LabelTransactionResponse) XXX_Unmarshal(b []byte) error {
@@ -1086,8 +1369,408 @@ func (m *LabelTransactionResponse) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_LabelTransactionResponse proto.InternalMessageInfo
 
+type FundPsbtRequest struct {
+	// Types that are valid to be assigned to Template:
+	//	*FundPsbtRequest_Psbt
+	//	*FundPsbtRequest_Raw
+	Template isFundPsbtRequest_Template `protobuf_oneof:"template"`
+	// Types that are valid to be assigned to Fees:
+	//	*FundPsbtRequest_TargetConf
+	//	*FundPsbtRequest_SatPerVbyte
+	Fees                 isFundPsbtRequest_Fees `protobuf_oneof:"fees"`
+	XXX_NoUnkeyedLiteral struct{}               `json:"-"`
+	XXX_unrecognized     []byte                 `json:"-"`
+	XXX_sizecache        int32                  `json:"-"`
+}
+
+func (m *FundPsbtRequest) Reset()         { *m = FundPsbtRequest{} }
+func (m *FundPsbtRequest) String() string { return proto.CompactTextString(m) }
+func (*FundPsbtRequest) ProtoMessage()    {}
+func (*FundPsbtRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{24}
+}
+
+func (m *FundPsbtRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_FundPsbtRequest.Unmarshal(m, b)
+}
+func (m *FundPsbtRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_FundPsbtRequest.Marshal(b, m, deterministic)
+}
+func (m *FundPsbtRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_FundPsbtRequest.Merge(m, src)
+}
+func (m *FundPsbtRequest) XXX_Size() int {
+	return xxx_messageInfo_FundPsbtRequest.Size(m)
+}
+func (m *FundPsbtRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_FundPsbtRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_FundPsbtRequest proto.InternalMessageInfo
+
+type isFundPsbtRequest_Template interface {
+	isFundPsbtRequest_Template()
+}
+
+type FundPsbtRequest_Psbt struct {
+	Psbt []byte `protobuf:"bytes,1,opt,name=psbt,proto3,oneof"`
+}
+
+type FundPsbtRequest_Raw struct {
+	Raw *TxTemplate `protobuf:"bytes,2,opt,name=raw,proto3,oneof"`
+}
+
+func (*FundPsbtRequest_Psbt) isFundPsbtRequest_Template() {}
+
+func (*FundPsbtRequest_Raw) isFundPsbtRequest_Template() {}
+
+func (m *FundPsbtRequest) GetTemplate() isFundPsbtRequest_Template {
+	if m != nil {
+		return m.Template
+	}
+	return nil
+}
+
+func (m *FundPsbtRequest) GetPsbt() []byte {
+	if x, ok := m.GetTemplate().(*FundPsbtRequest_Psbt); ok {
+		return x.Psbt
+	}
+	return nil
+}
+
+func (m *FundPsbtRequest) GetRaw() *TxTemplate {
+	if x, ok := m.GetTemplate().(*FundPsbtRequest_Raw); ok {
+		return x.Raw
+	}
+	return nil
+}
+
+type isFundPsbtRequest_Fees interface {
+	isFundPsbtRequest_Fees()
+}
+
+type FundPsbtRequest_TargetConf struct {
+	TargetConf uint32 `protobuf:"varint,3,opt,name=target_conf,json=targetConf,proto3,oneof"`
+}
+
+type FundPsbtRequest_SatPerVbyte struct {
+	SatPerVbyte uint32 `protobuf:"varint,4,opt,name=sat_per_vbyte,json=satPerVbyte,proto3,oneof"`
+}
+
+func (*FundPsbtRequest_TargetConf) isFundPsbtRequest_Fees() {}
+
+func (*FundPsbtRequest_SatPerVbyte) isFundPsbtRequest_Fees() {}
+
+func (m *FundPsbtRequest) GetFees() isFundPsbtRequest_Fees {
+	if m != nil {
+		return m.Fees
+	}
+	return nil
+}
+
+func (m *FundPsbtRequest) GetTargetConf() uint32 {
+	if x, ok := m.GetFees().(*FundPsbtRequest_TargetConf); ok {
+		return x.TargetConf
+	}
+	return 0
+}
+
+func (m *FundPsbtRequest) GetSatPerVbyte() uint32 {
+	if x, ok := m.GetFees().(*FundPsbtRequest_SatPerVbyte); ok {
+		return x.SatPerVbyte
+	}
+	return 0
+}
+
+// XXX_OneofWrappers is for the internal use of the proto package.
+func (*FundPsbtRequest) XXX_OneofWrappers() []interface{} {
+	return []interface{}{
+		(*FundPsbtRequest_Psbt)(nil),
+		(*FundPsbtRequest_Raw)(nil),
+		(*FundPsbtRequest_TargetConf)(nil),
+		(*FundPsbtRequest_SatPerVbyte)(nil),
+	}
+}
+
+type FundPsbtResponse struct {
+	//
+	//The funded but not yet signed PSBT packet.
+	FundedPsbt []byte `protobuf:"bytes,1,opt,name=funded_psbt,json=fundedPsbt,proto3" json:"funded_psbt,omitempty"`
+	//
+	//The index of the added change output or -1 if no change was left over.
+	ChangeOutputIndex int32 `protobuf:"varint,2,opt,name=change_output_index,json=changeOutputIndex,proto3" json:"change_output_index,omitempty"`
+	//
+	//The list of lock leases that were acquired for the inputs in the funded PSBT
+	//packet.
+	LockedUtxos          []*UtxoLease `protobuf:"bytes,3,rep,name=locked_utxos,json=lockedUtxos,proto3" json:"locked_utxos,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}     `json:"-"`
+	XXX_unrecognized     []byte       `json:"-"`
+	XXX_sizecache        int32        `json:"-"`
+}
+
+func (m *FundPsbtResponse) Reset()         { *m = FundPsbtResponse{} }
+func (m *FundPsbtResponse) String() string { return proto.CompactTextString(m) }
+func (*FundPsbtResponse) ProtoMessage()    {}
+func (*FundPsbtResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{25}
+}
+
+func (m *FundPsbtResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_FundPsbtResponse.Unmarshal(m, b)
+}
+func (m *FundPsbtResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_FundPsbtResponse.Marshal(b, m, deterministic)
+}
+func (m *FundPsbtResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_FundPsbtResponse.Merge(m, src)
+}
+func (m *FundPsbtResponse) XXX_Size() int {
+	return xxx_messageInfo_FundPsbtResponse.Size(m)
+}
+func (m *FundPsbtResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_FundPsbtResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_FundPsbtResponse proto.InternalMessageInfo
+
+func (m *FundPsbtResponse) GetFundedPsbt() []byte {
+	if m != nil {
+		return m.FundedPsbt
+	}
+	return nil
+}
+
+func (m *FundPsbtResponse) GetChangeOutputIndex() int32 {
+	if m != nil {
+		return m.ChangeOutputIndex
+	}
+	return 0
+}
+
+func (m *FundPsbtResponse) GetLockedUtxos() []*UtxoLease {
+	if m != nil {
+		return m.LockedUtxos
+	}
+	return nil
+}
+
+type TxTemplate struct {
+	//
+	//An optional list of inputs to use. Every input must be an UTXO known to the
+	//wallet that has not been locked before. The sum of all inputs must be
+	//sufficiently greater than the sum of all outputs to pay a miner fee with the
+	//fee rate specified in the parent message.
+	//
+	//If no inputs are specified, coin selection will be performed instead and
+	//inputs of sufficient value will be added to the resulting PSBT.
+	Inputs []*lnrpc.OutPoint `protobuf:"bytes,1,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	//
+	//A map of all addresses and the amounts to send to in the funded PSBT.
+	Outputs              map[string]uint64 `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
+	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
+	XXX_unrecognized     []byte            `json:"-"`
+	XXX_sizecache        int32             `json:"-"`
+}
+
+func (m *TxTemplate) Reset()         { *m = TxTemplate{} }
+func (m *TxTemplate) String() string { return proto.CompactTextString(m) }
+func (*TxTemplate) ProtoMessage()    {}
+func (*TxTemplate) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{26}
+}
+
+func (m *TxTemplate) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_TxTemplate.Unmarshal(m, b)
+}
+func (m *TxTemplate) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_TxTemplate.Marshal(b, m, deterministic)
+}
+func (m *TxTemplate) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_TxTemplate.Merge(m, src)
+}
+func (m *TxTemplate) XXX_Size() int {
+	return xxx_messageInfo_TxTemplate.Size(m)
+}
+func (m *TxTemplate) XXX_DiscardUnknown() {
+	xxx_messageInfo_TxTemplate.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_TxTemplate proto.InternalMessageInfo
+
+func (m *TxTemplate) GetInputs() []*lnrpc.OutPoint {
+	if m != nil {
+		return m.Inputs
+	}
+	return nil
+}
+
+func (m *TxTemplate) GetOutputs() map[string]uint64 {
+	if m != nil {
+		return m.Outputs
+	}
+	return nil
+}
+
+type UtxoLease struct {
+	//
+	//A 32 byte random ID that identifies the lease.
+	Id []byte `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The identifying outpoint of the output being leased.
+	Outpoint *lnrpc.OutPoint `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	//
+	//The absolute expiration of the output lease represented as a unix timestamp.
+	Expiration           uint64   `protobuf:"varint,3,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *UtxoLease) Reset()         { *m = UtxoLease{} }
+func (m *UtxoLease) String() string { return proto.CompactTextString(m) }
+func (*UtxoLease) ProtoMessage()    {}
+func (*UtxoLease) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{27}
+}
+
+func (m *UtxoLease) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_UtxoLease.Unmarshal(m, b)
+}
+func (m *UtxoLease) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_UtxoLease.Marshal(b, m, deterministic)
+}
+func (m *UtxoLease) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_UtxoLease.Merge(m, src)
+}
+func (m *UtxoLease) XXX_Size() int {
+	return xxx_messageInfo_UtxoLease.Size(m)
+}
+func (m *UtxoLease) XXX_DiscardUnknown() {
+	xxx_messageInfo_UtxoLease.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_UtxoLease proto.InternalMessageInfo
+
+func (m *UtxoLease) GetId() []byte {
+	if m != nil {
+		return m.Id
+	}
+	return nil
+}
+
+func (m *UtxoLease) GetOutpoint() *lnrpc.OutPoint {
+	if m != nil {
+		return m.Outpoint
+	}
+	return nil
+}
+
+func (m *UtxoLease) GetExpiration() uint64 {
+	if m != nil {
+		return m.Expiration
+	}
+	return 0
+}
+
+type FinalizePsbtRequest struct {
+	//
+	//A PSBT that should be signed and finalized. The PSBT must contain all
+	//required inputs, outputs, UTXO data and partial signatures of all other
+	//signers.
+	FundedPsbt           []byte   `protobuf:"bytes,1,opt,name=funded_psbt,json=fundedPsbt,proto3" json:"funded_psbt,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *FinalizePsbtRequest) Reset()         { *m = FinalizePsbtRequest{} }
+func (m *FinalizePsbtRequest) String() string { return proto.CompactTextString(m) }
+func (*FinalizePsbtRequest) ProtoMessage()    {}
+func (*FinalizePsbtRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{28}
+}
+
+func (m *FinalizePsbtRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_FinalizePsbtRequest.Unmarshal(m, b)
+}
+func (m *FinalizePsbtRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_FinalizePsbtRequest.Marshal(b, m, deterministic)
+}
+func (m *FinalizePsbtRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_FinalizePsbtRequest.Merge(m, src)
+}
+func (m *FinalizePsbtRequest) XXX_Size() int {
+	return xxx_messageInfo_FinalizePsbtRequest.Size(m)
+}
+func (m *FinalizePsbtRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_FinalizePsbtRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_FinalizePsbtRequest proto.InternalMessageInfo
+
+func (m *FinalizePsbtRequest) GetFundedPsbt() []byte {
+	if m != nil {
+		return m.FundedPsbt
+	}
+	return nil
+}
+
+type FinalizePsbtResponse struct {
+	// The fully signed and finalized transaction in PSBT format.
+	SignedPsbt []byte `protobuf:"bytes,1,opt,name=signed_psbt,json=signedPsbt,proto3" json:"signed_psbt,omitempty"`
+	// The fully signed and finalized transaction in the raw wire format.
+	RawFinalTx           []byte   `protobuf:"bytes,2,opt,name=raw_final_tx,json=rawFinalTx,proto3" json:"raw_final_tx,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *FinalizePsbtResponse) Reset()         { *m = FinalizePsbtResponse{} }
+func (m *FinalizePsbtResponse) String() string { return proto.CompactTextString(m) }
+func (*FinalizePsbtResponse) ProtoMessage()    {}
+func (*FinalizePsbtResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_6cc6942ac78249e5, []int{29}
+}
+
+func (m *FinalizePsbtResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_FinalizePsbtResponse.Unmarshal(m, b)
+}
+func (m *FinalizePsbtResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_FinalizePsbtResponse.Marshal(b, m, deterministic)
+}
+func (m *FinalizePsbtResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_FinalizePsbtResponse.Merge(m, src)
+}
+func (m *FinalizePsbtResponse) XXX_Size() int {
+	return xxx_messageInfo_FinalizePsbtResponse.Size(m)
+}
+func (m *FinalizePsbtResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_FinalizePsbtResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_FinalizePsbtResponse proto.InternalMessageInfo
+
+func (m *FinalizePsbtResponse) GetSignedPsbt() []byte {
+	if m != nil {
+		return m.SignedPsbt
+	}
+	return nil
+}
+
+func (m *FinalizePsbtResponse) GetRawFinalTx() []byte {
+	if m != nil {
+		return m.RawFinalTx
+	}
+	return nil
+}
+
 func init() {
 	proto.RegisterEnum("walletrpc.WitnessType", WitnessType_name, WitnessType_value)
+	proto.RegisterType((*ListUnspentRequest)(nil), "walletrpc.ListUnspentRequest")
+	proto.RegisterType((*ListUnspentResponse)(nil), "walletrpc.ListUnspentResponse")
+	proto.RegisterType((*LeaseOutputRequest)(nil), "walletrpc.LeaseOutputRequest")
+	proto.RegisterType((*LeaseOutputResponse)(nil), "walletrpc.LeaseOutputResponse")
+	proto.RegisterType((*ReleaseOutputRequest)(nil), "walletrpc.ReleaseOutputRequest")
+	proto.RegisterType((*ReleaseOutputResponse)(nil), "walletrpc.ReleaseOutputResponse")
 	proto.RegisterType((*KeyReq)(nil), "walletrpc.KeyReq")
 	proto.RegisterType((*AddrRequest)(nil), "walletrpc.AddrRequest")
 	proto.RegisterType((*AddrResponse)(nil), "walletrpc.AddrResponse")
@@ -1107,91 +1790,132 @@ func init() {
 	proto.RegisterType((*ListSweepsResponse_TransactionIDs)(nil), "walletrpc.ListSweepsResponse.TransactionIDs")
 	proto.RegisterType((*LabelTransactionRequest)(nil), "walletrpc.LabelTransactionRequest")
 	proto.RegisterType((*LabelTransactionResponse)(nil), "walletrpc.LabelTransactionResponse")
+	proto.RegisterType((*FundPsbtRequest)(nil), "walletrpc.FundPsbtRequest")
+	proto.RegisterType((*FundPsbtResponse)(nil), "walletrpc.FundPsbtResponse")
+	proto.RegisterType((*TxTemplate)(nil), "walletrpc.TxTemplate")
+	proto.RegisterMapType((map[string]uint64)(nil), "walletrpc.TxTemplate.OutputsEntry")
+	proto.RegisterType((*UtxoLease)(nil), "walletrpc.UtxoLease")
+	proto.RegisterType((*FinalizePsbtRequest)(nil), "walletrpc.FinalizePsbtRequest")
+	proto.RegisterType((*FinalizePsbtResponse)(nil), "walletrpc.FinalizePsbtResponse")
 }
 
 func init() { proto.RegisterFile("walletrpc/walletkit.proto", fileDescriptor_6cc6942ac78249e5) }
 
 var fileDescriptor_6cc6942ac78249e5 = []byte{
-	// 1255 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x94, 0x56, 0x6d, 0x6f, 0xda, 0x56,
-	0x14, 0x6e, 0x42, 0x20, 0x70, 0x78, 0x09, 0x39, 0xe4, 0x85, 0xd2, 0x74, 0xc9, 0x5c, 0x6d, 0x8b,
-	0xb6, 0x96, 0x68, 0xa9, 0x36, 0xad, 0x9d, 0x34, 0x2d, 0x01, 0x47, 0x44, 0x10, 0x9c, 0xd9, 0x6e,
-	0xa3, 0x6e, 0x1f, 0x2c, 0x83, 0x6f, 0x89, 0x15, 0x62, 0xbb, 0xd7, 0x97, 0x02, 0xdf, 0xf6, 0x2b,
-	0x26, 0xf5, 0xef, 0xed, 0x97, 0x4c, 0xbe, 0x7e, 0xe1, 0x1a, 0x9a, 0x4a, 0xfb, 0x84, 0xef, 0x39,
-	0xcf, 0x79, 0xce, 0x2b, 0xe7, 0x5e, 0x78, 0x3c, 0x35, 0xc7, 0x63, 0xc2, 0xa8, 0x37, 0x3c, 0x09,
-	0xbf, 0xee, 0x6c, 0xd6, 0xf4, 0xa8, 0xcb, 0x5c, 0x2c, 0x24, 0xaa, 0x46, 0x81, 0x7a, 0xc3, 0x50,
-	0xda, 0xd8, 0xf1, 0xed, 0x91, 0x13, 0xc0, 0x83, 0x5f, 0x42, 0x43, 0xa9, 0xf4, 0x07, 0xe4, 0xba,
-	0x64, 0xae, 0x92, 0x0f, 0x78, 0x0c, 0xd5, 0x3b, 0x32, 0x37, 0xde, 0xdb, 0xce, 0x88, 0x50, 0xc3,
-	0xa3, 0xb6, 0xc3, 0xea, 0x6b, 0x47, 0x6b, 0xc7, 0x59, 0xb5, 0x72, 0x47, 0xe6, 0x17, 0x5c, 0x7c,
-	0x1d, 0x48, 0xf1, 0x29, 0x00, 0x47, 0x9a, 0xf7, 0xf6, 0x78, 0x5e, 0x5f, 0xe7, 0x98, 0x42, 0x80,
-	0xe1, 0x02, 0xa9, 0x0c, 0xc5, 0x33, 0xcb, 0xa2, 0x2a, 0xf9, 0x30, 0x21, 0x3e, 0x93, 0x24, 0x28,
-	0x85, 0x47, 0xdf, 0x73, 0x1d, 0x9f, 0x20, 0xc2, 0x86, 0x69, 0x59, 0x94, 0x73, 0x17, 0x54, 0xfe,
-	0x2d, 0xbd, 0x86, 0xa2, 0x4e, 0x4d, 0xc7, 0x37, 0x87, 0xcc, 0x76, 0x1d, 0xdc, 0x85, 0x1c, 0x9b,
-	0x19, 0xb7, 0x64, 0xc6, 0x41, 0x25, 0x35, 0xcb, 0x66, 0x1d, 0x32, 0xc3, 0x1d, 0xc8, 0x8e, 0xcd,
-	0x01, 0x19, 0x73, 0x97, 0x05, 0x35, 0x3c, 0x48, 0x3f, 0xc3, 0xd6, 0xf5, 0x64, 0x30, 0xb6, 0xfd,
-	0xdb, 0xc4, 0xc5, 0x33, 0x28, 0x7b, 0xa1, 0xc8, 0x20, 0x94, 0xba, 0xb1, 0xaf, 0x52, 0x24, 0x94,
-	0x03, 0x99, 0x44, 0x01, 0x35, 0xe2, 0x58, 0xca, 0x84, 0x79, 0x13, 0xe6, 0x47, 0xd1, 0xe2, 0x01,
-	0x80, 0x6f, 0x32, 0xc3, 0x23, 0xd4, 0xb8, 0x9b, 0x72, 0xbb, 0x8c, 0x9a, 0xf7, 0x4d, 0x76, 0x4d,
-	0x68, 0x77, 0x8a, 0xc7, 0xb0, 0xe9, 0x86, 0xf8, 0xfa, 0xfa, 0x51, 0xe6, 0xb8, 0x78, 0x5a, 0x69,
-	0x46, 0x55, 0x6d, 0xea, 0x33, 0x65, 0xc2, 0xd4, 0x58, 0xbd, 0x88, 0x35, 0x23, 0xc6, 0xfa, 0x1c,
-	0x6a, 0x29, 0x9f, 0x51, 0xbc, 0xbb, 0x90, 0xa3, 0xe6, 0xd4, 0x60, 0x49, 0xbe, 0xd4, 0x9c, 0xea,
-	0x33, 0xe9, 0x27, 0x40, 0xd9, 0x67, 0xf6, 0xbd, 0xc9, 0xc8, 0x05, 0x21, 0x71, 0x84, 0x87, 0x50,
-	0x1c, 0xba, 0xce, 0x7b, 0x83, 0x99, 0x74, 0x44, 0xe2, 0x16, 0x41, 0x20, 0xd2, 0xb9, 0x44, 0x7a,
-	0x09, 0xb5, 0x94, 0x59, 0xe4, 0xe4, 0x8b, 0x99, 0x49, 0x9f, 0x32, 0x50, 0xba, 0x26, 0x8e, 0x65,
-	0x3b, 0x23, 0x6d, 0x4a, 0x88, 0x87, 0x3f, 0x40, 0x3e, 0xc8, 0xc5, 0x8d, 0xc7, 0xa0, 0x78, 0xba,
-	0xd5, 0x1c, 0xf3, 0x4c, 0x95, 0x09, 0xbb, 0x0e, 0xc4, 0x6a, 0x02, 0xc0, 0x57, 0x50, 0x9a, 0xda,
-	0xcc, 0x21, 0xbe, 0x6f, 0xb0, 0xb9, 0x47, 0x78, 0x83, 0x2a, 0xa7, 0x7b, 0xcd, 0x64, 0x10, 0x9b,
-	0x37, 0xa1, 0x5a, 0x9f, 0x7b, 0x44, 0x2d, 0x4e, 0x17, 0x87, 0x60, 0x98, 0xcc, 0x7b, 0x77, 0xe2,
-	0x30, 0xc3, 0x37, 0x19, 0xaf, 0x56, 0x59, 0x2d, 0x84, 0x12, 0xcd, 0x64, 0x78, 0x04, 0xa5, 0x38,
-	0xea, 0xc1, 0x9c, 0x91, 0xfa, 0x06, 0x07, 0x40, 0x18, 0xf7, 0xf9, 0x9c, 0x11, 0x7c, 0x01, 0x38,
-	0xa0, 0xae, 0x69, 0x0d, 0x4d, 0x9f, 0x19, 0x26, 0x63, 0xe4, 0xde, 0x63, 0x7e, 0x3d, 0xcb, 0x71,
-	0xdb, 0x89, 0xe6, 0x2c, 0x52, 0xe0, 0x29, 0xec, 0x3a, 0x64, 0xc6, 0x8c, 0x85, 0xcd, 0x2d, 0xb1,
-	0x47, 0xb7, 0xac, 0x9e, 0xe3, 0x16, 0xb5, 0x40, 0x79, 0x1e, 0xeb, 0x3a, 0x5c, 0x15, 0xd8, 0xd0,
-	0xb0, 0xfa, 0xc4, 0x32, 0xc4, 0xe2, 0xe7, 0x43, 0x9b, 0x44, 0xd9, 0x4a, 0xba, 0x80, 0x2f, 0x61,
-	0x6f, 0x61, 0x93, 0x4a, 0xa1, 0xb0, 0x64, 0xa4, 0x2d, 0x72, 0xd9, 0x81, 0xec, 0x7b, 0x97, 0x0e,
-	0x49, 0x7d, 0xf3, 0x68, 0xed, 0x38, 0xaf, 0x86, 0x07, 0x69, 0x0f, 0x76, 0xc4, 0xd6, 0xc4, 0xb3,
-	0x2a, 0xdd, 0xc0, 0xee, 0x92, 0x3c, 0x6a, 0xf5, 0x6f, 0x50, 0xf1, 0x42, 0x85, 0xe1, 0x73, 0x4d,
-	0x7d, 0x8d, 0x4f, 0xeb, 0xbe, 0xd0, 0x10, 0xd1, 0x52, 0x2d, 0x7b, 0x22, 0x8f, 0xf4, 0xcf, 0x1a,
-	0x54, 0xce, 0x27, 0xf7, 0x9e, 0x30, 0x75, 0xff, 0x6b, 0x1c, 0x0e, 0xa1, 0x18, 0x16, 0x88, 0x17,
-	0x8b, 0x4f, 0x43, 0x59, 0x85, 0x50, 0x14, 0x94, 0x68, 0xa5, 0xab, 0x99, 0x95, 0xae, 0x26, 0x95,
-	0xd8, 0x10, 0x2b, 0xb1, 0x0d, 0x5b, 0x49, 0x5c, 0x61, 0xae, 0xd2, 0x0b, 0xd8, 0xee, 0xd9, 0x3e,
-	0x4b, 0x55, 0x06, 0xeb, 0xb0, 0xf9, 0x91, 0xd0, 0x81, 0xeb, 0x13, 0x1e, 0x6c, 0x5e, 0x8d, 0x8f,
-	0xd2, 0xdf, 0xeb, 0x80, 0x22, 0x3e, 0xaa, 0x58, 0x0f, 0x6a, 0x6c, 0xb1, 0x80, 0x0c, 0x8b, 0x30,
-	0xd3, 0x1e, 0xfb, 0x51, 0xa6, 0x8f, 0xa3, 0x4c, 0x85, 0x15, 0xd5, 0x0e, 0x01, 0x9d, 0x47, 0x2a,
-	0xb2, 0x15, 0x29, 0xde, 0xc0, 0x96, 0xc8, 0x66, 0x5b, 0x3e, 0xaf, 0x41, 0xf1, 0xf4, 0xb9, 0xd0,
-	0x80, 0xd5, 0x28, 0x44, 0x07, 0x97, 0xed, 0x80, 0xbc, 0x22, 0xd0, 0x5c, 0x5a, 0x7e, 0xe3, 0x15,
-	0x54, 0xd2, 0x18, 0xfc, 0x6e, 0xd5, 0x55, 0xd0, 0xeb, 0xc2, 0xb2, 0xe9, 0x79, 0x1e, 0x72, 0xe1,
-	0x2c, 0x48, 0x26, 0xec, 0xf7, 0x82, 0x6d, 0x24, 0x30, 0xc5, 0x75, 0x43, 0xd8, 0x60, 0x33, 0xdb,
-	0x8a, 0xd6, 0x10, 0xff, 0xfe, 0xfc, 0xd6, 0xc5, 0x03, 0x28, 0xb8, 0x1f, 0x09, 0x9d, 0x52, 0x3b,
-	0x6a, 0x5f, 0x5e, 0x5d, 0x08, 0xa4, 0x06, 0xd4, 0x57, 0x5d, 0x84, 0x49, 0x7e, 0xff, 0x29, 0x03,
-	0x45, 0x61, 0x1b, 0x60, 0x0d, 0xb6, 0xde, 0xf4, 0xbb, 0x7d, 0xe5, 0xa6, 0x6f, 0xdc, 0x5c, 0xea,
-	0x7d, 0x59, 0xd3, 0xaa, 0x8f, 0xb0, 0x0e, 0x3b, 0x2d, 0xe5, 0xea, 0xea, 0x52, 0xbf, 0x92, 0xfb,
-	0xba, 0xa1, 0x5f, 0x5e, 0xc9, 0x46, 0x4f, 0x69, 0x75, 0xab, 0x6b, 0xb8, 0x0f, 0x35, 0x41, 0xd3,
-	0x57, 0x8c, 0xb6, 0xdc, 0x3b, 0x7b, 0x57, 0x5d, 0xc7, 0x5d, 0xd8, 0x16, 0x14, 0xaa, 0xfc, 0x56,
-	0xe9, 0xca, 0xd5, 0x4c, 0x80, 0xef, 0xe8, 0xbd, 0x96, 0xa1, 0x5c, 0x5c, 0xc8, 0xaa, 0xdc, 0x8e,
-	0x15, 0x1b, 0x81, 0x0b, 0xae, 0x38, 0x6b, 0xb5, 0xe4, 0x6b, 0x7d, 0xa1, 0xc9, 0xe2, 0x37, 0xf0,
-	0x75, 0xca, 0x24, 0x70, 0xaf, 0xbc, 0xd1, 0x0d, 0x4d, 0x6e, 0x29, 0xfd, 0xb6, 0xd1, 0x93, 0xdf,
-	0xca, 0xbd, 0x6a, 0x0e, 0xbf, 0x05, 0x29, 0x4d, 0xa0, 0xbd, 0x69, 0xb5, 0x64, 0x4d, 0x4b, 0xe3,
-	0x36, 0xf1, 0x10, 0x9e, 0x2c, 0x45, 0x70, 0xa5, 0xe8, 0x72, 0xcc, 0x5a, 0xcd, 0xe3, 0x11, 0x1c,
-	0x2c, 0x47, 0xc2, 0x11, 0x11, 0x5f, 0xb5, 0x80, 0x07, 0x50, 0xe7, 0x08, 0x91, 0x39, 0x8e, 0x17,
-	0x70, 0x07, 0xaa, 0x51, 0xe5, 0x8c, 0xae, 0xfc, 0xce, 0xe8, 0x9c, 0x69, 0x9d, 0x6a, 0x11, 0x9f,
-	0xc0, 0x7e, 0x5f, 0xd6, 0x02, 0xba, 0x15, 0x65, 0x69, 0xa9, 0x58, 0x67, 0xfd, 0x56, 0x47, 0x51,
-	0xab, 0xe5, 0xd3, 0x7f, 0xb3, 0x50, 0xb8, 0xe1, 0x13, 0xda, 0xb5, 0x19, 0xbe, 0x86, 0x72, 0x9b,
-	0x50, 0xfb, 0x23, 0xe9, 0x93, 0x19, 0xeb, 0x92, 0x39, 0x6e, 0x0b, 0xe3, 0x1b, 0xbe, 0x1a, 0x1a,
-	0x7b, 0xc9, 0x05, 0xd8, 0x25, 0xf3, 0x36, 0xf1, 0x87, 0xd4, 0xf6, 0x98, 0x4b, 0xf1, 0x17, 0x28,
-	0x84, 0xb6, 0x81, 0x5d, 0x4d, 0x04, 0xf5, 0xdc, 0xa1, 0xc9, 0x5c, 0xfa, 0xa0, 0xe5, 0xaf, 0x90,
-	0x0f, 0xfc, 0x05, 0x6f, 0x06, 0x14, 0x6f, 0x10, 0xe1, 0x4d, 0xd1, 0xd8, 0x5f, 0x91, 0x47, 0xff,
-	0xe3, 0x0e, 0x60, 0xf4, 0x18, 0x10, 0xdf, 0x13, 0x22, 0x8d, 0x20, 0x6f, 0x34, 0xc4, 0x7d, 0xb8,
-	0xf4, 0x86, 0xe8, 0x41, 0x51, 0xb8, 0xaa, 0xf1, 0xa9, 0x00, 0x5d, 0x7d, 0x36, 0x34, 0xbe, 0x7a,
-	0x48, 0xbd, 0x60, 0x13, 0xee, 0xe4, 0x14, 0xdb, 0xea, 0x15, 0x9f, 0x62, 0xfb, 0xdc, 0x55, 0xae,
-	0x42, 0x39, 0xb5, 0xf8, 0xf1, 0xf0, 0x81, 0xc5, 0x9e, 0xc4, 0x77, 0xf4, 0x30, 0x20, 0xe2, 0xfc,
-	0x1d, 0x36, 0xa3, 0xd5, 0x8a, 0x8f, 0x05, 0x70, 0xfa, 0x1a, 0x48, 0x55, 0x6c, 0x69, 0x13, 0xe3,
-	0x25, 0xc0, 0x62, 0xa7, 0xe1, 0xc1, 0x03, 0xab, 0x2e, 0xe4, 0x79, 0xfa, 0xc5, 0x45, 0x88, 0x7f,
-	0x41, 0x75, 0x79, 0x7f, 0xa0, 0x24, 0x9a, 0x7c, 0x7e, 0x7f, 0x35, 0x9e, 0x7d, 0x11, 0x13, 0x92,
-	0x9f, 0xff, 0xf8, 0xe7, 0xc9, 0xc8, 0x66, 0xb7, 0x93, 0x41, 0x73, 0xe8, 0xde, 0x9f, 0x8c, 0x83,
-	0x1b, 0xde, 0xb1, 0x9d, 0x91, 0x43, 0xd8, 0xd4, 0xa5, 0x77, 0x27, 0x63, 0xc7, 0x3a, 0xe1, 0xfb,
-	0xfe, 0x24, 0xe1, 0x1a, 0xe4, 0xf8, 0x63, 0xf9, 0xe5, 0x7f, 0x01, 0x00, 0x00, 0xff, 0xff, 0xb5,
-	0xeb, 0x99, 0xb8, 0x75, 0x0b, 0x00, 0x00,
+	// 1793 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xac, 0x58, 0xef, 0x6e, 0x22, 0xc9,
+	0x11, 0x5f, 0x0c, 0xc6, 0x50, 0x80, 0x8d, 0x1b, 0xbc, 0x66, 0x59, 0xef, 0xd9, 0x3b, 0x97, 0xe4,
+	0x9c, 0xdc, 0x1d, 0x56, 0xbc, 0xba, 0xcb, 0x9e, 0x13, 0x45, 0xb1, 0xf1, 0x58, 0x58, 0x60, 0xf0,
+	0x35, 0x78, 0xad, 0x4d, 0x3e, 0x8c, 0x06, 0xa6, 0x6d, 0x8f, 0x0c, 0x33, 0x73, 0x33, 0x8d, 0x19,
+	0xf2, 0x29, 0x4f, 0x11, 0xe9, 0xa4, 0xbc, 0xc3, 0xbd, 0x40, 0x1e, 0x28, 0x8f, 0x11, 0xf5, 0x1f,
+	0x86, 0x1e, 0xc0, 0x7b, 0x8a, 0x72, 0x9f, 0x4c, 0xd7, 0xaf, 0xea, 0xd7, 0xd5, 0x55, 0x35, 0x5d,
+	0xd5, 0x86, 0x57, 0x13, 0x73, 0x38, 0x24, 0xd4, 0xf7, 0x06, 0x47, 0xe2, 0xd7, 0xa3, 0x4d, 0x6b,
+	0x9e, 0xef, 0x52, 0x17, 0x65, 0x23, 0xa8, 0x9a, 0xf5, 0xbd, 0x81, 0x90, 0x56, 0xcb, 0x81, 0x7d,
+	0xef, 0x30, 0x75, 0xf6, 0x97, 0xf8, 0x42, 0xaa, 0xb5, 0x01, 0xb5, 0xec, 0x80, 0xde, 0x38, 0x81,
+	0x47, 0x1c, 0x8a, 0xc9, 0x0f, 0x63, 0x12, 0x50, 0xf4, 0x1a, 0xb2, 0x23, 0xdb, 0x31, 0x06, 0xae,
+	0x73, 0x17, 0x54, 0x12, 0x07, 0x89, 0xc3, 0x75, 0x9c, 0x19, 0xd9, 0x4e, 0x9d, 0xad, 0x39, 0x68,
+	0x86, 0x12, 0x5c, 0x93, 0xa0, 0x19, 0x72, 0x50, 0x7b, 0x0f, 0xa5, 0x18, 0x5f, 0xe0, 0xb9, 0x4e,
+	0x40, 0xd0, 0x5b, 0x58, 0x1f, 0xd3, 0xd0, 0x65, 0x64, 0xc9, 0xc3, 0xdc, 0x71, 0xae, 0x36, 0x64,
+	0xae, 0xd4, 0x6e, 0x68, 0xe8, 0x62, 0x81, 0x68, 0xdf, 0x03, 0x6a, 0x11, 0x33, 0x20, 0x9d, 0x31,
+	0xf5, 0xc6, 0x91, 0x27, 0x9b, 0xb0, 0x66, 0x5b, 0xdc, 0x85, 0x3c, 0x5e, 0xb3, 0x2d, 0xf4, 0x25,
+	0x64, 0xdc, 0x31, 0xf5, 0x5c, 0xdb, 0xa1, 0x7c, 0xef, 0xdc, 0xf1, 0x96, 0xe4, 0xea, 0x8c, 0xe9,
+	0x35, 0x13, 0xe3, 0x48, 0x41, 0xfb, 0x06, 0x4a, 0x31, 0x4a, 0xe9, 0xcc, 0x67, 0x00, 0x24, 0xf4,
+	0x6c, 0xdf, 0xa4, 0xb6, 0xeb, 0x70, 0xee, 0x14, 0x56, 0x24, 0x5a, 0x17, 0xca, 0x98, 0x0c, 0x7f,
+	0x61, 0x5f, 0x76, 0x61, 0x67, 0x81, 0x54, 0x78, 0xa3, 0x7d, 0x0f, 0xe9, 0x26, 0x99, 0x62, 0xf2,
+	0x03, 0x3a, 0x84, 0xe2, 0x23, 0x99, 0x1a, 0x77, 0xb6, 0x73, 0x4f, 0x7c, 0xc3, 0xf3, 0x19, 0xaf,
+	0x08, 0xfe, 0xe6, 0x23, 0x99, 0x5e, 0x70, 0xf1, 0x35, 0x93, 0xa2, 0x37, 0x00, 0x5c, 0xd3, 0x1c,
+	0xd9, 0xc3, 0xa9, 0xcc, 0x41, 0x96, 0xe9, 0x70, 0x81, 0x56, 0x80, 0xdc, 0xa9, 0x65, 0xf9, 0xd2,
+	0x6f, 0x4d, 0x83, 0xbc, 0x58, 0xca, 0xf3, 0x23, 0x48, 0x99, 0x96, 0xe5, 0x73, 0xee, 0x2c, 0xe6,
+	0xbf, 0xb5, 0x13, 0xc8, 0xf5, 0x7c, 0xd3, 0x09, 0xcc, 0x01, 0x0b, 0x01, 0xda, 0x81, 0x34, 0x0d,
+	0x8d, 0x07, 0x12, 0xca, 0xe3, 0xae, 0xd3, 0xb0, 0x41, 0x42, 0x54, 0x86, 0xf5, 0xa1, 0xd9, 0x27,
+	0x43, 0xbe, 0x65, 0x16, 0x8b, 0x85, 0xf6, 0x2d, 0x6c, 0x5d, 0x8f, 0xfb, 0x43, 0x3b, 0x78, 0x88,
+	0xb6, 0xf8, 0x1c, 0x0a, 0x9e, 0x10, 0x19, 0xc4, 0xf7, 0xdd, 0xd9, 0x5e, 0x79, 0x29, 0xd4, 0x99,
+	0x4c, 0xfb, 0x77, 0x02, 0x50, 0x97, 0x38, 0x96, 0x08, 0x48, 0x30, 0x0b, 0xf3, 0x1e, 0x40, 0x60,
+	0x52, 0xc3, 0x23, 0xbe, 0xf1, 0x38, 0xe1, 0x86, 0x49, 0x9c, 0x09, 0x4c, 0x7a, 0x4d, 0xfc, 0xe6,
+	0x04, 0x1d, 0xc2, 0x86, 0x2b, 0xf4, 0x2b, 0x6b, 0xbc, 0x96, 0x36, 0x6b, 0xb2, 0xb0, 0x6b, 0xbd,
+	0xb0, 0x33, 0xa6, 0x78, 0x06, 0xcf, 0x9d, 0x4d, 0x2a, 0xce, 0xc6, 0x4b, 0x3b, 0xb5, 0x50, 0xda,
+	0x5f, 0xc2, 0x36, 0xab, 0x5b, 0xcb, 0x18, 0x3b, 0x4c, 0xc1, 0xf6, 0x47, 0xc4, 0xaa, 0xac, 0x1f,
+	0x24, 0x0e, 0x33, 0xb8, 0xc8, 0x81, 0x9b, 0xb9, 0x5c, 0xfb, 0x0a, 0x4a, 0x31, 0xef, 0xe5, 0xd1,
+	0x77, 0x20, 0xed, 0x9b, 0x13, 0x83, 0x46, 0xa1, 0xf3, 0xcd, 0x49, 0x2f, 0xd4, 0xbe, 0x01, 0xa4,
+	0x07, 0xd4, 0x1e, 0x99, 0x94, 0x5c, 0x10, 0x32, 0x3b, 0xeb, 0x3e, 0xe4, 0x18, 0xa1, 0x41, 0x4d,
+	0xff, 0x9e, 0xcc, 0xb2, 0x0d, 0x4c, 0xd4, 0xe3, 0x12, 0xed, 0x1d, 0x94, 0x62, 0x66, 0x72, 0x93,
+	0x4f, 0xc6, 0x48, 0xfb, 0x31, 0x09, 0xf9, 0x6b, 0xe2, 0x58, 0xb6, 0x73, 0xdf, 0x9d, 0x10, 0xe2,
+	0xc5, 0x2a, 0x35, 0xf1, 0x33, 0x95, 0x8a, 0xbe, 0x83, 0xfc, 0xc4, 0xa6, 0x0e, 0x09, 0x02, 0x83,
+	0x4e, 0x3d, 0xc2, 0x73, 0xbd, 0x79, 0xfc, 0xb2, 0x16, 0xdd, 0x2a, 0xb5, 0x5b, 0x01, 0xf7, 0xa6,
+	0x1e, 0xc1, 0xb9, 0xc9, 0x7c, 0xc1, 0xea, 0xd2, 0x1c, 0xb9, 0x63, 0x87, 0x1a, 0x81, 0x49, 0x79,
+	0xdc, 0x0b, 0x38, 0x2b, 0x24, 0x5d, 0x93, 0xa2, 0x03, 0xc8, 0xcf, 0xbc, 0xee, 0x4f, 0x29, 0xe1,
+	0xe1, 0x2f, 0x60, 0x10, 0x7e, 0x9f, 0x4d, 0x29, 0x41, 0x5f, 0x03, 0xea, 0xfb, 0xae, 0x69, 0x0d,
+	0xcc, 0x80, 0x1a, 0x26, 0xa5, 0x64, 0xe4, 0xd1, 0x80, 0x67, 0xa0, 0x80, 0xb7, 0x23, 0xe4, 0x54,
+	0x02, 0xe8, 0x18, 0x76, 0x1c, 0x12, 0x52, 0x63, 0x6e, 0xf3, 0x40, 0xec, 0xfb, 0x07, 0x5a, 0x49,
+	0x73, 0x8b, 0x12, 0x03, 0xcf, 0x66, 0x58, 0x83, 0x43, 0xcc, 0xc6, 0x17, 0xd1, 0x27, 0x96, 0xa1,
+	0x06, 0x3f, 0x23, 0x6c, 0x22, 0xb0, 0x1e, 0x65, 0x01, 0xbd, 0x83, 0x97, 0x73, 0x9b, 0xd8, 0x11,
+	0xb2, 0x0b, 0x46, 0xdd, 0xf9, 0x59, 0xca, 0xb0, 0x7e, 0xe7, 0xfa, 0x03, 0x52, 0xd9, 0xe0, 0x05,
+	0x24, 0x16, 0xda, 0x4b, 0x28, 0xab, 0xa9, 0x99, 0x55, 0xbd, 0x76, 0x0b, 0x3b, 0x0b, 0x72, 0x99,
+	0xea, 0x3f, 0xc3, 0xa6, 0x27, 0x00, 0x23, 0xe0, 0x88, 0xbc, 0x43, 0x77, 0x95, 0x84, 0xa8, 0x96,
+	0xb8, 0xe0, 0xa9, 0x3c, 0xda, 0x3f, 0x13, 0xb0, 0x79, 0x36, 0x1e, 0x79, 0x4a, 0xd5, 0xfd, 0x4f,
+	0xe5, 0xb0, 0x0f, 0x39, 0x11, 0x20, 0x1e, 0x2c, 0x5e, 0x0d, 0x05, 0x0c, 0x42, 0xc4, 0x42, 0xb4,
+	0x94, 0xd5, 0xe4, 0x52, 0x56, 0xa3, 0x48, 0xa4, 0xd4, 0x48, 0x6c, 0xc3, 0x56, 0xe4, 0x97, 0xbc,
+	0x0b, 0xbf, 0x86, 0x6d, 0xd6, 0x3d, 0x62, 0x91, 0x41, 0x15, 0xd8, 0x78, 0x22, 0x7e, 0xdf, 0x0d,
+	0x08, 0x77, 0x36, 0x83, 0x67, 0x4b, 0xed, 0x1f, 0x6b, 0xa2, 0x7b, 0x2d, 0x44, 0xac, 0x05, 0x25,
+	0x3a, 0xbf, 0xcb, 0x0c, 0x8b, 0x50, 0xd3, 0x1e, 0x06, 0xf2, 0xa4, 0xaf, 0xe4, 0x49, 0x95, 0xdb,
+	0xee, 0x5c, 0x28, 0x34, 0x5e, 0x60, 0x44, 0x97, 0xa4, 0xe8, 0x16, 0xb6, 0x54, 0x36, 0xdb, 0x0a,
+	0xe4, 0x65, 0xff, 0x95, 0x92, 0x80, 0x65, 0x2f, 0xd4, 0x0d, 0x2e, 0xcf, 0x19, 0xf9, 0xa6, 0x42,
+	0x73, 0x69, 0x05, 0xd5, 0xef, 0x60, 0x33, 0xae, 0x83, 0xbe, 0x58, 0xde, 0x8a, 0xe5, 0x3a, 0xbb,
+	0x68, 0x7a, 0x96, 0x81, 0xb4, 0xa8, 0x05, 0xcd, 0x84, 0xdd, 0x16, 0xbb, 0xd7, 0x14, 0xa6, 0x59,
+	0xdc, 0x10, 0xa4, 0x68, 0x18, 0x35, 0x2c, 0xfe, 0x7b, 0xf5, 0x05, 0x8e, 0xf6, 0x20, 0xeb, 0x3e,
+	0x11, 0x7f, 0xe2, 0xdb, 0x32, 0x7d, 0x19, 0x3c, 0x17, 0x68, 0x55, 0xa8, 0x2c, 0x6f, 0x21, 0x13,
+	0xf6, 0x53, 0x02, 0xb6, 0x2e, 0xc6, 0x8e, 0x75, 0x1d, 0xf4, 0xa3, 0x36, 0x59, 0x86, 0x94, 0x17,
+	0xf4, 0x45, 0x65, 0xe5, 0x1b, 0x2f, 0x30, 0x5f, 0xa1, 0xdf, 0x42, 0xd2, 0x37, 0x27, 0x32, 0x74,
+	0x3b, 0x4a, 0xe8, 0x7a, 0x61, 0x8f, 0x8c, 0xbc, 0xa1, 0x49, 0x49, 0xe3, 0x05, 0x66, 0x3a, 0xe8,
+	0x6d, 0xbc, 0xe2, 0x78, 0x3d, 0x35, 0x12, 0xb1, 0x9a, 0xfb, 0x15, 0x14, 0x66, 0x35, 0xf7, 0x34,
+	0xbf, 0x4a, 0x1a, 0x09, 0x9c, 0x13, 0x65, 0xf7, 0x81, 0x09, 0xcf, 0x00, 0x32, 0x54, 0x72, 0x9f,
+	0xa5, 0x21, 0x75, 0x47, 0x48, 0xa0, 0xfd, 0x2b, 0x01, 0xc5, 0xb9, 0xc7, 0xb2, 0x62, 0xf6, 0x21,
+	0x77, 0x37, 0x76, 0x2c, 0x62, 0x19, 0x73, 0xcf, 0x31, 0x08, 0x11, 0x53, 0x44, 0x35, 0x28, 0x0d,
+	0x1e, 0x4c, 0xe7, 0x9e, 0x18, 0xa2, 0xbb, 0x18, 0xb6, 0x63, 0x91, 0x50, 0x76, 0xde, 0x6d, 0x01,
+	0x89, 0x46, 0x70, 0xc9, 0x00, 0xf4, 0x07, 0xc8, 0x0f, 0xdd, 0xc1, 0x23, 0xb1, 0x0c, 0x31, 0xf6,
+	0x24, 0xf9, 0x27, 0x5b, 0x56, 0x8e, 0xcd, 0x46, 0x1f, 0x3e, 0x9c, 0xe0, 0x9c, 0xd0, 0xbc, 0xe1,
+	0x53, 0xd0, 0x4f, 0x09, 0x80, 0x79, 0x44, 0xd0, 0x17, 0x90, 0xb6, 0x1d, 0xde, 0xec, 0xc4, 0x47,
+	0xbf, 0xf4, 0x9d, 0x4a, 0x18, 0xfd, 0x69, 0xb1, 0x2d, 0x6a, 0x2b, 0x43, 0x5c, 0x93, 0xdd, 0x4a,
+	0x77, 0xa8, 0x3f, 0x8d, 0x5a, 0x65, 0xf5, 0x04, 0xf2, 0x2a, 0x80, 0x8a, 0x90, 0x7c, 0x24, 0x53,
+	0xd9, 0xb4, 0xd9, 0x4f, 0x56, 0x38, 0x4f, 0xe6, 0x70, 0x2c, 0xba, 0x41, 0x0a, 0x8b, 0xc5, 0xc9,
+	0xda, 0xfb, 0x84, 0xf6, 0x00, 0xd9, 0xe8, 0x2c, 0xff, 0xd7, 0x88, 0xb4, 0x30, 0x97, 0x25, 0x97,
+	0xe6, 0xb2, 0x6f, 0xa1, 0x74, 0x61, 0x3b, 0xe6, 0xd0, 0xfe, 0x3b, 0x51, 0xeb, 0xed, 0xe7, 0x92,
+	0xa7, 0x7d, 0x84, 0x72, 0xdc, 0x6e, 0x9e, 0x75, 0x3e, 0x0b, 0xc7, 0x0d, 0x85, 0x88, 0x67, 0xfd,
+	0x00, 0xf2, 0xac, 0x95, 0xdf, 0x31, 0x63, 0xd6, 0xd0, 0xd7, 0x84, 0x86, 0x6f, 0x4e, 0x38, 0x5f,
+	0x2f, 0xfc, 0xdd, 0x8f, 0x49, 0xc8, 0x29, 0xdd, 0x10, 0x95, 0x60, 0xeb, 0xa6, 0xdd, 0x6c, 0x77,
+	0x6e, 0xdb, 0xc6, 0xed, 0x65, 0xaf, 0xad, 0x77, 0xbb, 0xc5, 0x17, 0xa8, 0x02, 0xe5, 0x7a, 0xe7,
+	0xea, 0xea, 0xb2, 0x77, 0xa5, 0xb7, 0x7b, 0x46, 0xef, 0xf2, 0x4a, 0x37, 0x5a, 0x9d, 0x7a, 0xb3,
+	0x98, 0x40, 0xbb, 0x50, 0x52, 0x90, 0x76, 0xc7, 0x38, 0xd7, 0x5b, 0xa7, 0x1f, 0x8b, 0x6b, 0x68,
+	0x07, 0xb6, 0x15, 0x00, 0xeb, 0x1f, 0x3a, 0x4d, 0xbd, 0x98, 0x64, 0xfa, 0x8d, 0x5e, 0xab, 0x6e,
+	0x74, 0x2e, 0x2e, 0x74, 0xac, 0x9f, 0xcf, 0x80, 0x14, 0xdb, 0x82, 0x03, 0xa7, 0xf5, 0xba, 0x7e,
+	0xdd, 0x9b, 0x23, 0xeb, 0xe8, 0xd7, 0xf0, 0x36, 0x66, 0xc2, 0xb6, 0xef, 0xdc, 0xf4, 0x8c, 0xae,
+	0x5e, 0xef, 0xb4, 0xcf, 0x8d, 0x96, 0xfe, 0x41, 0x6f, 0x15, 0xd3, 0xe8, 0x37, 0xa0, 0xc5, 0x09,
+	0xba, 0x37, 0xf5, 0xba, 0xde, 0xed, 0xc6, 0xf5, 0x36, 0xd0, 0x3e, 0xbc, 0x5e, 0xf0, 0xe0, 0xaa,
+	0xd3, 0xd3, 0x67, 0xac, 0xc5, 0x0c, 0x3a, 0x80, 0xbd, 0x45, 0x4f, 0xb8, 0x86, 0xe4, 0x2b, 0x66,
+	0xd1, 0x1e, 0x54, 0xb8, 0x86, 0xca, 0x3c, 0xf3, 0x17, 0x50, 0x19, 0x8a, 0x32, 0x72, 0x46, 0x53,
+	0xff, 0x68, 0x34, 0x4e, 0xbb, 0x8d, 0x62, 0x0e, 0xbd, 0x86, 0xdd, 0xb6, 0xde, 0x65, 0x74, 0x4b,
+	0x60, 0x7e, 0x21, 0x58, 0xa7, 0xed, 0x7a, 0xa3, 0x83, 0x8b, 0x85, 0xe3, 0xff, 0x64, 0x20, 0x7b,
+	0xcb, 0xbf, 0x81, 0xa6, 0x4d, 0x51, 0x0b, 0x72, 0xca, 0xc3, 0x04, 0xbd, 0x59, 0xb8, 0xbc, 0xe3,
+	0x0f, 0xa0, 0xea, 0x67, 0xcf, 0xc1, 0x51, 0x8b, 0xc9, 0x29, 0x2f, 0x8b, 0x38, 0xdb, 0xd2, 0xc3,
+	0x21, 0xce, 0xb6, 0xe2, 0x41, 0x82, 0xa1, 0x10, 0x7b, 0x1b, 0xa0, 0x7d, 0xc5, 0x60, 0xd5, 0x53,
+	0xa4, 0x7a, 0xf0, 0xbc, 0x82, 0xe4, 0x3c, 0x81, 0xc2, 0x39, 0xf1, 0xed, 0x27, 0xd2, 0x26, 0x21,
+	0x6d, 0x92, 0x29, 0xda, 0x56, 0x4c, 0xc4, 0x83, 0xa3, 0xfa, 0x32, 0x1a, 0x9d, 0x9b, 0x64, 0x7a,
+	0x4e, 0x82, 0x81, 0x6f, 0x7b, 0xd4, 0xf5, 0xd1, 0x7b, 0xc8, 0x0a, 0x5b, 0x66, 0x57, 0x52, 0x95,
+	0x5a, 0xee, 0xc0, 0xa4, 0xae, 0xff, 0xac, 0xe5, 0x1f, 0x21, 0xc3, 0xf6, 0x63, 0xcf, 0x0d, 0xa4,
+	0x4e, 0x8c, 0xca, 0x73, 0xa4, 0xba, 0xbb, 0x24, 0x97, 0x2e, 0x37, 0x00, 0xc9, 0x77, 0x84, 0xfa,
+	0x14, 0x51, 0x69, 0x14, 0x79, 0xb5, 0xaa, 0xce, 0x3f, 0x0b, 0xcf, 0x8f, 0x16, 0xe4, 0x94, 0xd1,
+	0x3c, 0x96, 0x9e, 0xe5, 0x07, 0x47, 0x2c, 0x3d, 0xab, 0x26, 0xfa, 0x16, 0xe4, 0x94, 0x19, 0x3c,
+	0xc6, 0xb6, 0x3c, 0xd2, 0xc7, 0xd8, 0x56, 0x8d, 0xee, 0x18, 0x0a, 0xb1, 0x41, 0x2f, 0x96, 0xec,
+	0x55, 0xa3, 0x61, 0x2c, 0xd9, 0xab, 0x67, 0xc4, 0xbf, 0xc0, 0x86, 0x1c, 0xa5, 0xd0, 0x2b, 0x45,
+	0x39, 0x3e, 0xf6, 0xc5, 0x22, 0xb6, 0x30, 0x79, 0xa1, 0x4b, 0x80, 0xf9, 0x0c, 0x83, 0xf6, 0x9e,
+	0x19, 0x6d, 0x04, 0xcf, 0x9b, 0x4f, 0x0e, 0x3e, 0xe8, 0x6f, 0x50, 0x5c, 0x9c, 0x17, 0x90, 0xda,
+	0x8d, 0x9e, 0x99, 0x57, 0xaa, 0x9f, 0x7f, 0x52, 0x47, 0x92, 0xd7, 0x21, 0x33, 0xeb, 0xde, 0x48,
+	0x3d, 0xcf, 0xc2, 0x10, 0x52, 0x7d, 0xbd, 0x12, 0x93, 0x24, 0x1d, 0xc8, 0xab, 0x0d, 0x01, 0xa9,
+	0x29, 0x5b, 0xd1, 0x61, 0xaa, 0xfb, 0xcf, 0xe2, 0x82, 0xf0, 0xec, 0xf7, 0x7f, 0x3d, 0xba, 0xb7,
+	0xe9, 0xc3, 0xb8, 0x5f, 0x1b, 0xb8, 0xa3, 0xa3, 0x21, 0x7b, 0x67, 0x38, 0xb6, 0x73, 0xef, 0x10,
+	0x3a, 0x71, 0xfd, 0xc7, 0xa3, 0xa1, 0x63, 0x1d, 0xf1, 0xae, 0x77, 0x14, 0xf1, 0xf4, 0xd3, 0xfc,
+	0xff, 0x2f, 0xef, 0xfe, 0x1b, 0x00, 0x00, 0xff, 0xff, 0x88, 0xe3, 0xa5, 0xe6, 0xc8, 0x11, 0x00,
+	0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -1206,6 +1930,22 @@ const _ = grpc.SupportPackageIsVersion4
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type WalletKitClient interface {
+	//
+	//ListUnspent returns a list of all utxos spendable by the wallet with a
+	//number of confirmations between the specified minimum and maximum.
+	ListUnspent(ctx context.Context, in *ListUnspentRequest, opts ...grpc.CallOption) (*ListUnspentResponse, error)
+	//
+	//LeaseOutput locks an output to the given ID, preventing it from being
+	//available for any future coin selection attempts. The absolute time of the
+	//lock's expiration is returned. The expiration of the lock can be extended by
+	//successive invocations of this RPC. Outputs can be unlocked before their
+	//expiration through `ReleaseOutput`.
+	LeaseOutput(ctx context.Context, in *LeaseOutputRequest, opts ...grpc.CallOption) (*LeaseOutputResponse, error)
+	//
+	//ReleaseOutput unlocks an output, allowing it to be available for coin
+	//selection if it remains unspent. The ID should match the one used to
+	//originally lock the output.
+	ReleaseOutput(ctx context.Context, in *ReleaseOutputRequest, opts ...grpc.CallOption) (*ReleaseOutputResponse, error)
 	//
 	//DeriveNextKey attempts to derive the *next* key within the key family
 	//(account in BIP43) specified. This method should return the next external
@@ -1282,6 +2022,39 @@ type WalletKitClient interface {
 	//overwrite the exiting transaction label. Labels must not be empty, and
 	//cannot exceed 500 characters.
 	LabelTransaction(ctx context.Context, in *LabelTransactionRequest, opts ...grpc.CallOption) (*LabelTransactionResponse, error)
+	//
+	//FundPsbt creates a fully populated PSBT that contains enough inputs to fund
+	//the outputs specified in the template. There are two ways of specifying a
+	//template: Either by passing in a PSBT with at least one output declared or
+	//by passing in a raw TxTemplate message.
+	//
+	//If there are no inputs specified in the template, coin selection is
+	//performed automatically. If the template does contain any inputs, it is
+	//assumed that full coin selection happened externally and no additional
+	//inputs are added. If the specified inputs aren't enough to fund the outputs
+	//with the given fee rate, an error is returned.
+	//
+	//After either selecting or verifying the inputs, all input UTXOs are locked
+	//with an internal app ID.
+	//
+	//NOTE: If this method returns without an error, it is the caller's
+	//responsibility to either spend the locked UTXOs (by finalizing and then
+	//publishing the transaction) or to unlock/release the locked UTXOs in case of
+	//an error on the caller's side.
+	FundPsbt(ctx context.Context, in *FundPsbtRequest, opts ...grpc.CallOption) (*FundPsbtResponse, error)
+	//
+	//FinalizePsbt expects a partial transaction with all inputs and outputs fully
+	//declared and tries to sign all inputs that belong to the wallet. Lnd must be
+	//the last signer of the transaction. That means, if there are any unsigned
+	//non-witness inputs or inputs without UTXO information attached or inputs
+	//without witness data that do not belong to lnd's wallet, this method will
+	//fail. If no error is returned, the PSBT is ready to be extracted and the
+	//final TX within to be broadcast.
+	//
+	//NOTE: This method does NOT publish the transaction once finalized. It is the
+	//caller's responsibility to either publish the transaction on success or
+	//unlock/release any locked UTXOs in case of an error in this method.
+	FinalizePsbt(ctx context.Context, in *FinalizePsbtRequest, opts ...grpc.CallOption) (*FinalizePsbtResponse, error)
 }
 
 type walletKitClient struct {
@@ -1290,6 +2063,33 @@ type walletKitClient struct {
 
 func NewWalletKitClient(cc *grpc.ClientConn) WalletKitClient {
 	return &walletKitClient{cc}
+}
+
+func (c *walletKitClient) ListUnspent(ctx context.Context, in *ListUnspentRequest, opts ...grpc.CallOption) (*ListUnspentResponse, error) {
+	out := new(ListUnspentResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ListUnspent", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) LeaseOutput(ctx context.Context, in *LeaseOutputRequest, opts ...grpc.CallOption) (*LeaseOutputResponse, error) {
+	out := new(LeaseOutputResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/LeaseOutput", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) ReleaseOutput(ctx context.Context, in *ReleaseOutputRequest, opts ...grpc.CallOption) (*ReleaseOutputResponse, error) {
+	out := new(ReleaseOutputResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ReleaseOutput", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *walletKitClient) DeriveNextKey(ctx context.Context, in *KeyReq, opts ...grpc.CallOption) (*signrpc.KeyDescriptor, error) {
@@ -1382,8 +2182,42 @@ func (c *walletKitClient) LabelTransaction(ctx context.Context, in *LabelTransac
 	return out, nil
 }
 
+func (c *walletKitClient) FundPsbt(ctx context.Context, in *FundPsbtRequest, opts ...grpc.CallOption) (*FundPsbtResponse, error) {
+	out := new(FundPsbtResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/FundPsbt", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) FinalizePsbt(ctx context.Context, in *FinalizePsbtRequest, opts ...grpc.CallOption) (*FinalizePsbtResponse, error) {
+	out := new(FinalizePsbtResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/FinalizePsbt", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WalletKitServer is the server API for WalletKit service.
 type WalletKitServer interface {
+	//
+	//ListUnspent returns a list of all utxos spendable by the wallet with a
+	//number of confirmations between the specified minimum and maximum.
+	ListUnspent(context.Context, *ListUnspentRequest) (*ListUnspentResponse, error)
+	//
+	//LeaseOutput locks an output to the given ID, preventing it from being
+	//available for any future coin selection attempts. The absolute time of the
+	//lock's expiration is returned. The expiration of the lock can be extended by
+	//successive invocations of this RPC. Outputs can be unlocked before their
+	//expiration through `ReleaseOutput`.
+	LeaseOutput(context.Context, *LeaseOutputRequest) (*LeaseOutputResponse, error)
+	//
+	//ReleaseOutput unlocks an output, allowing it to be available for coin
+	//selection if it remains unspent. The ID should match the one used to
+	//originally lock the output.
+	ReleaseOutput(context.Context, *ReleaseOutputRequest) (*ReleaseOutputResponse, error)
 	//
 	//DeriveNextKey attempts to derive the *next* key within the key family
 	//(account in BIP43) specified. This method should return the next external
@@ -1460,10 +2294,147 @@ type WalletKitServer interface {
 	//overwrite the exiting transaction label. Labels must not be empty, and
 	//cannot exceed 500 characters.
 	LabelTransaction(context.Context, *LabelTransactionRequest) (*LabelTransactionResponse, error)
+	//
+	//FundPsbt creates a fully populated PSBT that contains enough inputs to fund
+	//the outputs specified in the template. There are two ways of specifying a
+	//template: Either by passing in a PSBT with at least one output declared or
+	//by passing in a raw TxTemplate message.
+	//
+	//If there are no inputs specified in the template, coin selection is
+	//performed automatically. If the template does contain any inputs, it is
+	//assumed that full coin selection happened externally and no additional
+	//inputs are added. If the specified inputs aren't enough to fund the outputs
+	//with the given fee rate, an error is returned.
+	//
+	//After either selecting or verifying the inputs, all input UTXOs are locked
+	//with an internal app ID.
+	//
+	//NOTE: If this method returns without an error, it is the caller's
+	//responsibility to either spend the locked UTXOs (by finalizing and then
+	//publishing the transaction) or to unlock/release the locked UTXOs in case of
+	//an error on the caller's side.
+	FundPsbt(context.Context, *FundPsbtRequest) (*FundPsbtResponse, error)
+	//
+	//FinalizePsbt expects a partial transaction with all inputs and outputs fully
+	//declared and tries to sign all inputs that belong to the wallet. Lnd must be
+	//the last signer of the transaction. That means, if there are any unsigned
+	//non-witness inputs or inputs without UTXO information attached or inputs
+	//without witness data that do not belong to lnd's wallet, this method will
+	//fail. If no error is returned, the PSBT is ready to be extracted and the
+	//final TX within to be broadcast.
+	//
+	//NOTE: This method does NOT publish the transaction once finalized. It is the
+	//caller's responsibility to either publish the transaction on success or
+	//unlock/release any locked UTXOs in case of an error in this method.
+	FinalizePsbt(context.Context, *FinalizePsbtRequest) (*FinalizePsbtResponse, error)
+}
+
+// UnimplementedWalletKitServer can be embedded to have forward compatible implementations.
+type UnimplementedWalletKitServer struct {
+}
+
+func (*UnimplementedWalletKitServer) ListUnspent(ctx context.Context, req *ListUnspentRequest) (*ListUnspentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListUnspent not implemented")
+}
+func (*UnimplementedWalletKitServer) LeaseOutput(ctx context.Context, req *LeaseOutputRequest) (*LeaseOutputResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LeaseOutput not implemented")
+}
+func (*UnimplementedWalletKitServer) ReleaseOutput(ctx context.Context, req *ReleaseOutputRequest) (*ReleaseOutputResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseOutput not implemented")
+}
+func (*UnimplementedWalletKitServer) DeriveNextKey(ctx context.Context, req *KeyReq) (*signrpc.KeyDescriptor, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeriveNextKey not implemented")
+}
+func (*UnimplementedWalletKitServer) DeriveKey(ctx context.Context, req *signrpc.KeyLocator) (*signrpc.KeyDescriptor, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeriveKey not implemented")
+}
+func (*UnimplementedWalletKitServer) NextAddr(ctx context.Context, req *AddrRequest) (*AddrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NextAddr not implemented")
+}
+func (*UnimplementedWalletKitServer) PublishTransaction(ctx context.Context, req *Transaction) (*PublishResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PublishTransaction not implemented")
+}
+func (*UnimplementedWalletKitServer) SendOutputs(ctx context.Context, req *SendOutputsRequest) (*SendOutputsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendOutputs not implemented")
+}
+func (*UnimplementedWalletKitServer) EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EstimateFee not implemented")
+}
+func (*UnimplementedWalletKitServer) PendingSweeps(ctx context.Context, req *PendingSweepsRequest) (*PendingSweepsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PendingSweeps not implemented")
+}
+func (*UnimplementedWalletKitServer) BumpFee(ctx context.Context, req *BumpFeeRequest) (*BumpFeeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BumpFee not implemented")
+}
+func (*UnimplementedWalletKitServer) ListSweeps(ctx context.Context, req *ListSweepsRequest) (*ListSweepsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSweeps not implemented")
+}
+func (*UnimplementedWalletKitServer) LabelTransaction(ctx context.Context, req *LabelTransactionRequest) (*LabelTransactionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LabelTransaction not implemented")
+}
+func (*UnimplementedWalletKitServer) FundPsbt(ctx context.Context, req *FundPsbtRequest) (*FundPsbtResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FundPsbt not implemented")
+}
+func (*UnimplementedWalletKitServer) FinalizePsbt(ctx context.Context, req *FinalizePsbtRequest) (*FinalizePsbtResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FinalizePsbt not implemented")
 }
 
 func RegisterWalletKitServer(s *grpc.Server, srv WalletKitServer) {
 	s.RegisterService(&_WalletKit_serviceDesc, srv)
+}
+
+func _WalletKit_ListUnspent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUnspentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).ListUnspent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/ListUnspent",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).ListUnspent(ctx, req.(*ListUnspentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_LeaseOutput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseOutputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).LeaseOutput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/LeaseOutput",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).LeaseOutput(ctx, req.(*LeaseOutputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_ReleaseOutput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseOutputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).ReleaseOutput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/ReleaseOutput",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).ReleaseOutput(ctx, req.(*ReleaseOutputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _WalletKit_DeriveNextKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -1646,10 +2617,58 @@ func _WalletKit_LabelTransaction_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletKit_FundPsbt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FundPsbtRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).FundPsbt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/FundPsbt",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).FundPsbt(ctx, req.(*FundPsbtRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_FinalizePsbt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FinalizePsbtRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).FinalizePsbt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/FinalizePsbt",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).FinalizePsbt(ctx, req.(*FinalizePsbtRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 var _WalletKit_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "walletrpc.WalletKit",
 	HandlerType: (*WalletKitServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ListUnspent",
+			Handler:    _WalletKit_ListUnspent_Handler,
+		},
+		{
+			MethodName: "LeaseOutput",
+			Handler:    _WalletKit_LeaseOutput_Handler,
+		},
+		{
+			MethodName: "ReleaseOutput",
+			Handler:    _WalletKit_ReleaseOutput_Handler,
+		},
 		{
 			MethodName: "DeriveNextKey",
 			Handler:    _WalletKit_DeriveNextKey_Handler,
@@ -1689,6 +2708,14 @@ var _WalletKit_serviceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LabelTransaction",
 			Handler:    _WalletKit_LabelTransaction_Handler,
+		},
+		{
+			MethodName: "FundPsbt",
+			Handler:    _WalletKit_FundPsbt_Handler,
+		},
+		{
+			MethodName: "FinalizePsbt",
+			Handler:    _WalletKit_FinalizePsbt_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -13,8 +13,10 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/macaroons"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
@@ -66,19 +68,9 @@ var (
 
 	// ErrChainNotifierServerNotActive indicates that the chain notifier hasn't
 	// finished the startup process.
-	ErrChainNotifierServerNotActive = errors.New("chain notifier RPC is" +
+	ErrChainNotifierServerNotActive = errors.New("chain notifier RPC is " +
 		"still in the process of starting")
 )
-
-// fileExists reports whether the named file or directory exists.
-func fileExists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
-}
 
 // Server is a sub-server of the main RPC server: the chain notifier RPC. This
 // RPC sub-server allows external callers to access the full chain notifier
@@ -109,17 +101,20 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	}
 
 	// Now that we know the full path of the chain notifier macaroon, we can
-	// check to see if we need to create it or not.
+	// check to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
 	macFilePath := cfg.ChainNotifierMacPath
-	if cfg.MacService != nil && !fileExists(macFilePath) {
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Baking macaroons for ChainNotifier RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the chain notifier macaroon
 		// doesn't yet, exist, so we need to create it with the help of
 		// the main macaroon service.
-		chainNotifierMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		chainNotifierMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -131,7 +126,7 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, chainNotifierMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -186,6 +181,28 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 	log.Debug("ChainNotifier RPC server successfully register with root " +
 		"gRPC server")
 
+	return nil
+}
+
+// RegisterWithRestServer will be called by the root REST mux to direct a sub
+// RPC server to register itself with the main REST mux server. Until this is
+// called, each sub-server won't be able to have requests routed towards it.
+//
+// NOTE: This is part of the lnrpc.SubServer interface.
+func (s *Server) RegisterWithRestServer(ctx context.Context,
+	mux *runtime.ServeMux, dest string, opts []grpc.DialOption) error {
+
+	// We make sure that we register it with the main REST server to ensure
+	// all our methods are routed properly.
+	err := RegisterChainNotifierHandlerFromEndpoint(ctx, mux, dest, opts)
+	if err != nil {
+		log.Errorf("Could not register ChainNotifier REST server "+
+			"with root REST server: %v", err)
+		return err
+	}
+
+	log.Debugf("ChainNotifier REST server successfully registered with " +
+		"root REST server")
 	return nil
 }
 

@@ -7,9 +7,12 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 const (
@@ -46,20 +49,41 @@ func TestHtlcOutgoingResolverRemoteClaim(t *testing.T) {
 	// Setup the resolver with our test resolution and start the resolution
 	// process.
 	ctx := newOutgoingResolverTestContext(t)
+
+	// Replace our mocked checkpoint function with one which will push
+	// reports into a channel for us to consume. We do so on the resolver
+	// level because our test context has already created the resolver.
+	reportChan := make(chan *channeldb.ResolverReport)
+	ctx.resolver.Checkpoint = func(_ ContractResolver,
+		reports ...*channeldb.ResolverReport) error {
+
+		// Send all of our reports into the channel.
+		for _, report := range reports {
+			reportChan <- report
+		}
+
+		return nil
+	}
+
 	ctx.resolve()
 
 	// The remote party sweeps the htlc. Notify our resolver of this event.
 	preimage := lntypes.Preimage{}
-	ctx.notifier.spendChan <- &chainntnfs.SpendDetail{
-		SpendingTx: &wire.MsgTx{
-			TxIn: []*wire.TxIn{
-				{
-					Witness: [][]byte{
-						{0}, {1}, {2}, preimage[:],
-					},
+	spendTx := &wire.MsgTx{
+		TxIn: []*wire.TxIn{
+			{
+				Witness: [][]byte{
+					{0}, {1}, {2}, preimage[:],
 				},
 			},
 		},
+	}
+
+	spendHash := spendTx.TxHash()
+
+	ctx.notifier.SpendChan <- &chainntnfs.SpendDetail{
+		SpendingTx:    spendTx,
+		SpenderTxHash: &spendHash,
 	}
 
 	// We expect the extracted preimage to be added to the witness beacon.
@@ -68,6 +92,17 @@ func TestHtlcOutgoingResolverRemoteClaim(t *testing.T) {
 	// We also expect a resolution message to the incoming side of the
 	// circuit.
 	<-ctx.resolutionChan
+
+	// Finally, check that we have a report as expected.
+	expectedReport := &channeldb.ResolverReport{
+		OutPoint:        wire.OutPoint{},
+		Amount:          0,
+		ResolverType:    channeldb.ResolverTypeOutgoingHtlc,
+		ResolverOutcome: channeldb.ResolverOutcomeClaimed,
+		SpendTxID:       &spendHash,
+	}
+
+	assertResolverReport(t, reportChan, expectedReport)
 
 	// Assert that the resolver finishes without error.
 	ctx.waitForResult(false)
@@ -80,7 +115,7 @@ type resolveResult struct {
 
 type outgoingResolverTestContext struct {
 	resolver           *htlcOutgoingContestResolver
-	notifier           *mockNotifier
+	notifier           *mock.ChainNotifier
 	preimageDB         *mockWitnessBeacon
 	resolverResultChan chan resolveResult
 	resolutionChan     chan ResolutionMsg
@@ -88,10 +123,10 @@ type outgoingResolverTestContext struct {
 }
 
 func newOutgoingResolverTestContext(t *testing.T) *outgoingResolverTestContext {
-	notifier := &mockNotifier{
-		epochChan: make(chan *chainntnfs.BlockEpoch),
-		spendChan: make(chan *chainntnfs.SpendDetail),
-		confChan:  make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 
 	checkPointChan := make(chan struct{}, 1)
@@ -117,6 +152,11 @@ func newOutgoingResolverTestContext(t *testing.T) *outgoingResolverTestContext {
 			},
 			OnionProcessor: onionProcessor,
 		},
+		PutResolverReport: func(_ kvdb.RwTx,
+			_ *channeldb.ResolverReport) error {
+
+			return nil
+		},
 	}
 
 	outgoingRes := lnwallet.OutgoingHtlcResolution{
@@ -128,17 +168,20 @@ func newOutgoingResolverTestContext(t *testing.T) *outgoingResolverTestContext {
 
 	cfg := ResolverConfig{
 		ChannelArbitratorConfig: chainCfg,
-		Checkpoint: func(_ ContractResolver) error {
+		Checkpoint: func(_ ContractResolver,
+			_ ...*channeldb.ResolverReport) error {
+
 			checkPointChan <- struct{}{}
 			return nil
 		},
 	}
 
 	resolver := &htlcOutgoingContestResolver{
-		htlcTimeoutResolver: htlcTimeoutResolver{
+		htlcTimeoutResolver: &htlcTimeoutResolver{
 			contractResolverKit: *newContractResolverKit(cfg),
 			htlcResolution:      outgoingRes,
 			htlc: channeldb.HTLC{
+				Amt:       lnwire.MilliSatoshi(testHtlcAmount),
 				RHash:     testResHash,
 				OnionBlob: testOnionBlob,
 			},
@@ -170,7 +213,7 @@ func (i *outgoingResolverTestContext) resolve() {
 }
 
 func (i *outgoingResolverTestContext) notifyEpoch(height int32) {
-	i.notifier.epochChan <- &chainntnfs.BlockEpoch{
+	i.notifier.EpochChan <- &chainntnfs.BlockEpoch{
 		Height: height,
 	}
 }

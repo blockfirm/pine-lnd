@@ -3,19 +3,23 @@ package lncfg
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 )
 
 const (
-	dbName      = "channel.db"
-	boltBackend = "bolt"
-	etcdBackend = "etcd"
+	dbName                     = "channel.db"
+	BoltBackend                = "bolt"
+	EtcdBackend                = "etcd"
+	DefaultBatchCommitInterval = 500 * time.Millisecond
 )
 
 // DB holds database configuration for LND.
 type DB struct {
 	Backend string `long:"backend" description:"The selected database backend."`
+
+	BatchCommitInterval time.Duration `long:"batch-commit-interval" description:"The maximum duration the channel graph batch schedulers will wait before attempting to commit a batch of pending updates. This can be tradeoff database contenion for commit latency."`
 
 	Etcd *kvdb.EtcdConfig `group:"etcd" namespace:"etcd" description:"Etcd settings."`
 
@@ -25,9 +29,11 @@ type DB struct {
 // NewDB creates and returns a new default DB config.
 func DefaultDB() *DB {
 	return &DB{
-		Backend: boltBackend,
+		Backend:             BoltBackend,
+		BatchCommitInterval: DefaultBatchCommitInterval,
 		Bolt: &kvdb.BoltConfig{
-			NoFreeListSync: true,
+			AutoCompactMinAge: kvdb.DefaultBoltAutoCompactMinAge,
+			DBTimeout:         kvdb.DefaultDBTimeout,
 		},
 	}
 }
@@ -35,31 +41,79 @@ func DefaultDB() *DB {
 // Validate validates the DB config.
 func (db *DB) Validate() error {
 	switch db.Backend {
-	case boltBackend:
+	case BoltBackend:
 
-	case etcdBackend:
-		if db.Etcd.Host == "" {
+	case EtcdBackend:
+		if !db.Etcd.Embedded && db.Etcd.Host == "" {
 			return fmt.Errorf("etcd host must be set")
 		}
 
 	default:
 		return fmt.Errorf("unknown backend, must be either \"%v\" or \"%v\"",
-			boltBackend, etcdBackend)
+			BoltBackend, EtcdBackend)
 	}
 
 	return nil
 }
 
-// GetBackend returns a kvdb.Backend as set in the DB config.
-func (db *DB) GetBackend(ctx context.Context, dbPath string,
-	networkName string) (kvdb.Backend, error) {
+// DatabaseBackends is a two-tuple that holds the set of active database
+// backends for the daemon. The two backends we expose are the local database
+// backend, and the remote backend. The LocalDB attribute will always be
+// populated. However, the remote DB will only be set if a replicated database
+// is active.
+type DatabaseBackends struct {
+	// LocalDB points to the local non-replicated backend.
+	LocalDB kvdb.Backend
 
-	if db.Backend == etcdBackend {
-		// Prefix will separate key/values in the db.
-		return kvdb.GetEtcdBackend(ctx, networkName, db.Etcd)
+	// RemoteDB points to a possibly networked replicated backend. If no
+	// replicated backend is active, then this pointer will be nil.
+	RemoteDB kvdb.Backend
+}
+
+// GetBackends returns a set of kvdb.Backends as set in the DB config.  The
+// local database will ALWAYS be non-nil, while the remote database will only
+// be populated if etcd is specified.
+func (db *DB) GetBackends(ctx context.Context, dbPath string,
+	networkName string) (*DatabaseBackends, error) {
+
+	var (
+		localDB, remoteDB kvdb.Backend
+		err               error
+	)
+
+	if db.Backend == EtcdBackend {
+		if db.Etcd.Embedded {
+			remoteDB, _, err = kvdb.GetEtcdTestBackend(
+				dbPath, db.Etcd.EmbeddedClientPort,
+				db.Etcd.EmbeddedPeerPort,
+			)
+		} else {
+			// Prefix will separate key/values in the db.
+			remoteDB, err = kvdb.GetEtcdBackend(
+				ctx, networkName, db.Etcd,
+			)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return kvdb.GetBoltBackend(dbPath, dbName, db.Bolt.NoFreeListSync)
+	localDB, err = kvdb.GetBoltBackend(&kvdb.BoltBackendConfig{
+		DBPath:            dbPath,
+		DBFileName:        dbName,
+		DBTimeout:         db.Bolt.DBTimeout,
+		NoFreelistSync:    !db.Bolt.SyncFreelist,
+		AutoCompact:       db.Bolt.AutoCompact,
+		AutoCompactMinAge: db.Bolt.AutoCompactMinAge,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &DatabaseBackends{
+		LocalDB:  localDB,
+		RemoteDB: remoteDB,
+	}, nil
 }
 
 // Compile-time constraint to ensure Workers implements the Validator interface.

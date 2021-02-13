@@ -70,6 +70,10 @@ type RouterBackend struct {
 	// SubscribeHtlcEvents returns a subscription client for the node's
 	// htlc events.
 	SubscribeHtlcEvents func() (*subscribe.Client, error)
+
+	// InterceptableForwarder exposes the ability to intercept forward events
+	// by letting the router register a ForwardInterceptor.
+	InterceptableForwarder htlcswitch.InterceptableHtlcForwarder
 }
 
 // MissionControl defines the mission control dependencies of routerrpc.
@@ -91,6 +95,13 @@ type MissionControl interface {
 	// pair.
 	GetPairHistorySnapshot(fromNode,
 		toNode route.Vertex) routing.TimedPairResult
+
+	// GetConfig gets mission control's current config.
+	GetConfig() *routing.MissionControlConfig
+
+	// SetConfig sets mission control's config to the values provided, if
+	// they are valid.
+	SetConfig(cfg *routing.MissionControlConfig) error
 }
 
 // QueryRoutes attempts to query the daemons' Channel Router for a possible
@@ -644,6 +655,10 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 			payIntent.Amount = *payReq.MilliSat
 		}
 
+		if !payReq.Features.HasFeature(lnwire.MPPOptional) {
+			payIntent.MaxParts = 1
+		}
+
 		copy(payIntent.PaymentHash[:], payReq.PaymentHash[:])
 		destKey := payReq.Destination.SerializeCompressed()
 		copy(payIntent.Target[:], destKey)
@@ -689,6 +704,15 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		features, err := UnmarshalFeatures(rpcPayReq.DestFeatures)
 		if err != nil {
 			return nil, err
+		}
+
+		// If the payment addresses is specified, then we'll also
+		// populate that now as well.
+		if len(rpcPayReq.PaymentAddr) != 0 {
+			var payAddr [32]byte
+			copy(payAddr[:], rpcPayReq.PaymentAddr)
+
+			payIntent.PaymentAddr = &payAddr
 		}
 
 		payIntent.DestFeatures = features
@@ -848,6 +872,7 @@ func (r *RouterBackend) MarshalHTLCAttempt(
 	}
 
 	rpcAttempt := &lnrpc.HTLCAttempt{
+		AttemptId:     htlc.AttemptID,
 		AttemptTimeNs: MarshalTimeNano(htlc.AttemptTime),
 		Route:         route,
 	}

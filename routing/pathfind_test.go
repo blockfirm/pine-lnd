@@ -26,7 +26,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 const (
@@ -2076,7 +2075,7 @@ func TestPathFindSpecExample(t *testing.T) {
 	const amt lnwire.MilliSatoshi = 4999999
 	route, err := ctx.router.FindRoute(
 		bobNode.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find route: %v", err)
@@ -2100,14 +2099,14 @@ func TestPathFindSpecExample(t *testing.T) {
 		t.Fatalf("wrong hop fee: got %v, expected %v", fee, 0)
 	}
 
-	// The CLTV expiry should be the current height plus 9 (the expiry for
+	// The CLTV expiry should be the current height plus 18 (the expiry for
 	// the B -> C channel.
 	if route.TotalTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			route.TotalTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 
 	// Next, we'll set A as the source node so we can assert that we create
@@ -2132,7 +2131,7 @@ func TestPathFindSpecExample(t *testing.T) {
 	// We'll now request a route from A -> B -> C.
 	route, err = ctx.router.FindRoute(
 		source.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find routes: %v", err)
@@ -2145,15 +2144,16 @@ func TestPathFindSpecExample(t *testing.T) {
 	}
 
 	// The total amount should factor in a fee of 10199 and also use a CLTV
-	// delta total of 29 (20 + 9),
+	// delta total of 38 (20 + 18),
 	expectedAmt := lnwire.MilliSatoshi(5010198)
 	if route.TotalAmount != expectedAmt {
 		t.Fatalf("wrong amount: got %v, expected %v",
 			route.TotalAmount, expectedAmt)
 	}
-	if route.TotalTimeLock != startingHeight+29 {
+	expectedDelta := uint32(20 + MinCLTVDelta)
+	if route.TotalTimeLock != startingHeight+expectedDelta {
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
-			route.TotalTimeLock, startingHeight+29)
+			route.TotalTimeLock, startingHeight+expectedDelta)
 	}
 
 	// Ensure that the hops of the route are properly crafted.
@@ -2188,11 +2188,11 @@ func TestPathFindSpecExample(t *testing.T) {
 	// The outgoing CLTV value itself should be the current height plus 30
 	// to meet Carol's requirements.
 	if route.Hops[0].OutgoingTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			route.Hops[0].OutgoingTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 
 	// For B -> C, we assert that the final hop also has the proper
@@ -2203,11 +2203,11 @@ func TestPathFindSpecExample(t *testing.T) {
 			lastHop.AmtToForward, amt)
 	}
 	if lastHop.OutgoingTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			lastHop.OutgoingTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 }
 
@@ -2461,25 +2461,43 @@ func TestProbabilityRouting(t *testing.T) {
 		p10, p11, p20  float64
 		minProbability float64
 		expectedChan   uint64
+		amount         btcutil.Amount
 	}{
 		// Test two variations with probabilities that should multiply
 		// to the same total route probability. In both cases the three
 		// hop route should be the best route. The three hop route has a
 		// probability of 0.5 * 0.8 = 0.4. The fee is 5 (chan 10) + 8
-		// (chan 11) = 13. Path finding distance should work out to: 13
-		// + 10 (attempt penalty) / 0.4 = 38. The two hop route is 25 +
-		// 10 / 0.7 = 39.
+		// (chan 11) = 13. The attempt cost is 9 + 1% * 100 = 10. Path
+		// finding distance should work out to: 13 + 10 (attempt
+		// penalty) / 0.4 = 38. The two hop route is 25 + 10 / 0.7 = 39.
 		{
 			name: "three hop 1",
 			p10:  0.8, p11: 0.5, p20: 0.7,
 			minProbability: 0.1,
 			expectedChan:   10,
+			amount:         100,
 		},
 		{
 			name: "three hop 2",
 			p10:  0.5, p11: 0.8, p20: 0.7,
 			minProbability: 0.1,
 			expectedChan:   10,
+			amount:         100,
+		},
+
+		// If a larger amount is sent, the effect of the proportional
+		// attempt cost becomes more noticeable. This amount in this
+		// test brings the attempt cost to 9 + 1% * 300 = 12 sat. The
+		// three hop path finding distance should work out to: 13 + 12
+		// (attempt penalty) / 0.4 = 43. The two hop route is 25 + 12 /
+		// 0.7 = 42. For this higher amount, the two hop route is
+		// expected to be selected.
+		{
+			name: "two hop high amount",
+			p10:  0.8, p11: 0.5, p20: 0.7,
+			minProbability: 0.1,
+			expectedChan:   20,
+			amount:         300,
 		},
 
 		// If the probability of the two hop route is increased, its
@@ -2492,6 +2510,7 @@ func TestProbabilityRouting(t *testing.T) {
 			p10:  0.5, p11: 0.8, p20: 0.85,
 			minProbability: 0.1,
 			expectedChan:   20,
+			amount:         100,
 		},
 
 		// If the same probabilities are used with a probability lower bound of
@@ -2502,6 +2521,7 @@ func TestProbabilityRouting(t *testing.T) {
 			p10:  0.8, p11: 0.5, p20: 0.7,
 			minProbability: 0.5,
 			expectedChan:   20,
+			amount:         100,
 		},
 
 		// With a probability limit above the probability of both routes, we
@@ -2512,21 +2532,24 @@ func TestProbabilityRouting(t *testing.T) {
 			p10:  0.8, p11: 0.5, p20: 0.7,
 			minProbability: 0.8,
 			expectedChan:   0,
+			amount:         100,
 		},
 	}
 
 	for _, tc := range testCases {
+		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			testProbabilityRouting(
-				t, tc.p10, tc.p11, tc.p20,
+				t, tc.amount, tc.p10, tc.p11, tc.p20,
 				tc.minProbability, tc.expectedChan,
 			)
 		})
 	}
 }
 
-func testProbabilityRouting(t *testing.T, p10, p11, p20, minProbability float64,
-	expectedChan uint64) {
+func testProbabilityRouting(t *testing.T, paymentAmt btcutil.Amount,
+	p10, p11, p20, minProbability float64, expectedChan uint64) {
 
 	t.Parallel()
 
@@ -2558,7 +2581,6 @@ func testProbabilityRouting(t *testing.T, p10, p11, p20, minProbability float64,
 
 	alias := ctx.testGraphInstance.aliasMap
 
-	paymentAmt := lnwire.NewMSatFromSatoshis(100)
 	target := ctx.testGraphInstance.aliasMap["target"]
 
 	// Configure a probability source with the test parameters.
@@ -2582,11 +2604,14 @@ func testProbabilityRouting(t *testing.T, p10, p11, p20, minProbability float64,
 	}
 
 	ctx.pathFindingConfig = PathFindingConfig{
-		PaymentAttemptPenalty: lnwire.NewMSatFromSatoshis(10),
-		MinProbability:        minProbability,
+		AttemptCost:    lnwire.NewMSatFromSatoshis(9),
+		AttemptCostPPM: 10000,
+		MinProbability: minProbability,
 	}
 
-	path, err := ctx.findPath(target, paymentAmt)
+	path, err := ctx.findPath(
+		target, lnwire.NewMSatFromSatoshis(paymentAmt),
+	)
 	if expectedChan == 0 {
 		if err != errNoPathFound {
 			t.Fatalf("expected no path found, but got %v", err)
@@ -2656,7 +2681,7 @@ func TestEqualCostRouteSelection(t *testing.T) {
 	}
 
 	ctx.pathFindingConfig = PathFindingConfig{
-		PaymentAttemptPenalty: lnwire.NewMSatFromSatoshis(1),
+		AttemptCost: lnwire.NewMSatFromSatoshis(1),
 	}
 
 	path, err := ctx.findPath(target, paymentAmt)

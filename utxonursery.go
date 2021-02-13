@@ -11,10 +11,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/sweep"
 )
@@ -477,7 +477,7 @@ func (u *utxoNursery) NurseryReport(
 	utxnLog.Debugf("NurseryReport: building nursery report for channel %v",
 		chanPoint)
 
-	report := &contractMaturityReport{}
+	var report *contractMaturityReport
 
 	if err := u.cfg.Store.ForChanOutputs(chanPoint, func(k, v []byte) error {
 		switch {
@@ -576,6 +576,8 @@ func (u *utxoNursery) NurseryReport(
 		}
 
 		return nil
+	}, func() {
+		report = &contractMaturityReport{}
 	}); err != nil {
 		return nil, err
 	}
@@ -867,7 +869,8 @@ func (u *utxoNursery) sweepCribOutput(classHeight uint32, baby *babyOutput) erro
 
 	// We'll now broadcast the HTLC transaction, then wait for it to be
 	// confirmed before transitioning it to kindergarten.
-	err := u.cfg.PublishTransaction(baby.timeoutTx, "")
+	label := labels.MakeLabel(labels.LabelTypeSweepTransaction, nil)
+	err := u.cfg.PublishTransaction(baby.timeoutTx, label)
 	if err != nil && err != lnwallet.ErrDoubleSpend {
 		utxnLog.Errorf("Unable to broadcast baby tx: "+
 			"%v, %v", err, spew.Sdump(baby.timeoutTx))

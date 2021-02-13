@@ -262,7 +262,7 @@ type HistoricalConfDispatch struct {
 	// inclusion of within the chain.
 	ConfRequest
 
-	// StartHeight specifies the block height at which to being the
+	// StartHeight specifies the block height at which to begin the
 	// historical rescan.
 	StartHeight uint32
 
@@ -752,7 +752,19 @@ func (n *TxNotifier) CancelConf(confRequest ConfRequest, confID uint64) {
 	close(ntfn.Event.Confirmed)
 	close(ntfn.Event.Updates)
 	close(ntfn.Event.NegativeConf)
+
+	// Finally, we'll clean up any lingering references to this
+	// notification.
 	delete(confSet.ntfns, confID)
+
+	// Remove the queued confirmation notification if the transaction has
+	// already confirmed, but hasn't met its required number of
+	// confirmations.
+	if confSet.details != nil {
+		confHeight := confSet.details.BlockHeight +
+			ntfn.NumConfirmations - 1
+		delete(n.ntfnsByConfirmHeight[confHeight], ntfn)
+	}
 }
 
 // UpdateConfDetails attempts to update the confirmation details for an active
@@ -1945,19 +1957,21 @@ func (n *TxNotifier) TearDown() {
 	defer n.Unlock()
 
 	for _, confSet := range n.confNotifications {
-		for _, ntfn := range confSet.ntfns {
+		for confID, ntfn := range confSet.ntfns {
 			close(ntfn.Event.Confirmed)
 			close(ntfn.Event.Updates)
 			close(ntfn.Event.NegativeConf)
 			close(ntfn.Event.Done)
+			delete(confSet.ntfns, confID)
 		}
 	}
 
 	for _, spendSet := range n.spendNotifications {
-		for _, ntfn := range spendSet.ntfns {
+		for spendID, ntfn := range spendSet.ntfns {
 			close(ntfn.Event.Spend)
 			close(ntfn.Event.Reorg)
 			close(ntfn.Event.Done)
+			delete(spendSet.ntfns, spendID)
 		}
 	}
 }

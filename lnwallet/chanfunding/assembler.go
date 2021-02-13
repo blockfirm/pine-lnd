@@ -103,6 +103,16 @@ type Intent interface {
 	// change.
 	LocalFundingAmt() btcutil.Amount
 
+	// Inputs returns all inputs to the final funding transaction that we
+	// know about. Note that there might be more, but we are not (yet)
+	// aware of.
+	Inputs() []wire.OutPoint
+
+	// Outputs returns all outputs of the final funding transaction that we
+	// know about. Note that there might be more, but we are not (yet)
+	// aware of.
+	Outputs() []*wire.TxOut
+
 	// Cancel allows the caller to cancel a funding Intent at any time.
 	// This will return any resources such as coins back to the eligible
 	// pool to be used in order channel fundings.
@@ -134,4 +144,19 @@ type FundingTxAssembler interface {
 	// implement to signal to callers that its able to provide the funding
 	// transaction for the channel via the intent it returns.
 	FundingTxAvailable()
+}
+
+// ConditionalPublishAssembler is an assembler that can dynamically define if
+// the funding transaction should be published after channel negotiations or
+// not. Not publishing the transaction is only useful if the particular channel
+// the assembler is in charge of is part of a batch of channels. In that case
+// it is only safe to wait for all channel negotiations of the batch to complete
+// before publishing the batch transaction.
+type ConditionalPublishAssembler interface {
+	Assembler
+
+	// ShouldPublishFundingTx is a method of the assembler that signals if
+	// the funding transaction should be published after the channel
+	// negotiations are completed with the remote peer.
+	ShouldPublishFundingTx() bool
 }

@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btclog"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -420,6 +420,9 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 			return
 		}
 
+		log.Debugf("Received network result %T for paymentID=%v", n.msg,
+			paymentID)
+
 		// Extract the result and pass it to the result channel.
 		result, err := s.extractResult(
 			deobfuscator, n, paymentID, paymentHash,
@@ -436,6 +439,14 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 	}()
 
 	return resultChan, nil
+}
+
+// CleanStore calls the underlying result store, telling it is safe to delete
+// all entries except the ones in the keepPids map. This should be called
+// preiodically to let the switch clean up payment results that we have
+// handled.
+func (s *Switch) CleanStore(keepPids map[uint64]struct{}) error {
+	return s.networkResults.cleanStore(keepPids)
 }
 
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
@@ -548,23 +559,13 @@ func (s *Switch) IsForwardedHTLC(chanID lnwire.ShortChannelID,
 // given to forward them through the router. The sending link's quit channel is
 // used to prevent deadlocks when the switch stops a link in the midst of
 // forwarding.
-//
-// NOTE: This method guarantees that the returned err chan will eventually be
-// closed. The receiver should read on the channel until receiving such a
-// signal.
 func (s *Switch) ForwardPackets(linkQuit chan struct{},
-	packets ...*htlcPacket) chan error {
+	packets ...*htlcPacket) error {
 
 	var (
 		// fwdChan is a buffered channel used to receive err msgs from
 		// the htlcPlex when forwarding this batch.
 		fwdChan = make(chan error, len(packets))
-
-		// errChan is a buffered channel returned to the caller, that is
-		// proxied by the fwdChan. This method guarantees that errChan
-		// will be closed eventually to alert the receiver that it can
-		// stop reading from the channel.
-		errChan = make(chan error, len(packets))
 
 		// numSent keeps a running count of how many packets are
 		// forwarded to the switch, which determines how many responses
@@ -574,8 +575,7 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 
 	// No packets, nothing to do.
 	if len(packets) == 0 {
-		close(errChan)
-		return errChan
+		return nil
 	}
 
 	// Setup a barrier to prevent the background tasks from processing
@@ -590,18 +590,13 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 	// it is already in the process of shutting down.
 	select {
 	case <-linkQuit:
-		close(errChan)
-		return errChan
+		return nil
 	case <-s.quit:
-		close(errChan)
-		return errChan
+		return nil
 	default:
-		// Spawn a goroutine the proxy the errs back to the returned err
-		// chan.  This is done to ensure the err chan returned to the
-		// caller closed properly, alerting the receiver of completion
-		// or shutdown.
+		// Spawn a goroutine to log the errors returned from failed packets.
 		s.wg.Add(1)
-		go s.proxyFwdErrs(&numSent, &wg, fwdChan, errChan)
+		go s.logFwdErrs(&numSent, &wg, fwdChan)
 	}
 
 	// Make a first pass over the packets, forwarding any settles or fails.
@@ -619,7 +614,7 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 		default:
 			err := s.routeAsync(packet, fwdChan, linkQuit)
 			if err != nil {
-				return errChan
+				return fmt.Errorf("failed to forward packet %v", err)
 			}
 			numSent++
 		}
@@ -628,7 +623,7 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 	// If this batch did not contain any circuits to commit, we can return
 	// early.
 	if len(circuits) == 0 {
-		return errChan
+		return nil
 	}
 
 	// Write any circuits that we found to disk.
@@ -664,7 +659,7 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 	for _, packet := range addedPackets {
 		err := s.routeAsync(packet, fwdChan, linkQuit)
 		if err != nil {
-			return errChan
+			return fmt.Errorf("failed to forward packet %v", err)
 		}
 		numSent++
 	}
@@ -693,21 +688,12 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 		}
 	}
 
-	return errChan
+	return nil
 }
 
-// proxyFwdErrs transmits any errors received on `fwdChan` back to `errChan`,
-// and guarantees that the `errChan` will be closed after 1) all errors have
-// been sent, or 2) the switch has received a shutdown. The `errChan` should be
-// buffered with at least the value of `num` after the barrier has been
-// released.
-//
-// NOTE: The receiver of `errChan` should read until the channel closed, since
-// this proxying guarantees that the close will happen.
-func (s *Switch) proxyFwdErrs(num *int, wg *sync.WaitGroup,
-	fwdChan, errChan chan error) {
+// logFwdErrs logs any errors received on `fwdChan`
+func (s *Switch) logFwdErrs(num *int, wg *sync.WaitGroup, fwdChan chan error) {
 	defer s.wg.Done()
-	defer close(errChan)
 
 	// Wait here until the outer function has finished persisting
 	// and routing the packets. This guarantees we don't read from num until
@@ -718,7 +704,10 @@ func (s *Switch) proxyFwdErrs(num *int, wg *sync.WaitGroup,
 	for i := 0; i < numSent; i++ {
 		select {
 		case err := <-fwdChan:
-			errChan <- err
+			if err != nil {
+				log.Errorf("Unhandled error while reforwarding htlc "+
+					"settle/fail over htlcswitch: %v", err)
+			}
 		case <-s.quit:
 			log.Errorf("unable to forward htlc packet " +
 				"htlc switch was stopped")
@@ -947,7 +936,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 			OutgoingFailureOnChainTimeout,
 		)
 
-		log.Info("%v: hash=%v, pid=%d",
+		log.Infof("%v: hash=%v, pid=%d",
 			linkError.FailureDetail.FailureString(),
 			paymentHash, paymentID)
 
@@ -1033,9 +1022,9 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// trying all links to utilize our available bandwidth.
 		linkErrs := make(map[lnwire.ShortChannelID]*LinkError)
 
-		// Try to find destination channel link with appropriate
+		// Find all destination channel links with appropriate
 		// bandwidth.
-		var destination ChannelLink
+		var destinations []ChannelLink
 		for _, link := range interfaceLinks {
 			var failure *LinkError
 
@@ -1058,10 +1047,11 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 				)
 			}
 
-			// Stop searching if this link can forward the htlc.
+			// If this link can forward the htlc, add it to the set
+			// of destinations.
 			if failure == nil {
-				destination = link
-				break
+				destinations = append(destinations, link)
+				continue
 			}
 
 			linkErrs[link.ShortChanID()] = failure
@@ -1071,7 +1061,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// satisfying the current policy, then we'll send back an
 		// error, but ensure we send back the error sourced at the
 		// *target* link.
-		if destination == nil {
+		if len(destinations) == 0 {
 			// At this point, some or all of the links rejected the
 			// HTLC so we couldn't forward it. So we'll try to look
 			// up the error that came from the source.
@@ -1097,6 +1087,12 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 			return s.failAddPacket(packet, linkErr)
 		}
+
+		// Choose a random link out of the set of links that can forward
+		// this htlc. The reason for randomization is to evenly
+		// distribute the htlc load without making assumptions about
+		// what the best channel is.
+		destination := destinations[rand.Intn(len(destinations))]
 
 		// Send the packet to the destination channel link which
 		// manages the channel.
@@ -1834,12 +1830,14 @@ func (s *Switch) reforwardResponses() error {
 func (s *Switch) loadChannelFwdPkgs(source lnwire.ShortChannelID) ([]*channeldb.FwdPkg, error) {
 
 	var fwdPkgs []*channeldb.FwdPkg
-	if err := kvdb.Update(s.cfg.DB, func(tx kvdb.RwTx) error {
+	if err := kvdb.View(s.cfg.DB, func(tx kvdb.RTx) error {
 		var err error
 		fwdPkgs, err = s.cfg.SwitchPackager.LoadChannelFwdPkgs(
 			tx, source,
 		)
 		return err
+	}, func() {
+		fwdPkgs = nil
 	}); err != nil {
 		return nil, err
 	}
@@ -1925,28 +1923,10 @@ func (s *Switch) reforwardSettleFails(fwdPkgs []*channeldb.FwdPkg) {
 		// Since this send isn't tied to a specific link, we pass a nil
 		// link quit channel, meaning the send will fail only if the
 		// switch receives a shutdown request.
-		errChan := s.ForwardPackets(nil, switchPackets...)
-		go handleBatchFwdErrs(errChan, log)
-	}
-}
-
-// handleBatchFwdErrs waits on the given errChan until it is closed, logging the
-// errors returned from any unsuccessful forwarding attempts.
-func handleBatchFwdErrs(errChan chan error, l btclog.Logger) {
-	for {
-		err, ok := <-errChan
-		if !ok {
-			// Err chan has been drained or switch is shutting down.
-			// Either way, return.
-			return
+		if err := s.ForwardPackets(nil, switchPackets...); err != nil {
+			log.Errorf("Unhandled error while reforwarding packets "+
+				"settle/fail over htlcswitch: %v", err)
 		}
-
-		if err == nil {
-			continue
-		}
-
-		l.Errorf("Unhandled error while reforwarding htlc "+
-			"settle/fail over htlcswitch: %v", err)
 	}
 }
 
@@ -2208,6 +2188,12 @@ func (s *Switch) getLinks(destination [33]byte) ([]ChannelLink, error) {
 // CircuitModifier returns a reference to subset of the interfaces provided by
 // the circuit map, to allow links to open and close circuits.
 func (s *Switch) CircuitModifier() CircuitModifier {
+	return s.circuits
+}
+
+// CircuitLookup returns a reference to subset of the interfaces provided by the
+// circuit map, to allow looking up circuits.
+func (s *Switch) CircuitLookup() CircuitLookup {
 	return s.circuits
 }
 

@@ -8,12 +8,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -25,6 +27,16 @@ var (
 	// close a channel that's already in the process of doing so.
 	errAlreadyForceClosed = errors.New("channel is already in the " +
 		"process of being force closed")
+)
+
+const (
+	// anchorSweepConfTarget is the conf target used when sweeping
+	// commitment anchors.
+	anchorSweepConfTarget = 6
+
+	// arbitratorBlockBufferSize is the size of the buffer we give to each
+	// channel arbitrator.
+	arbitratorBlockBufferSize = 20
 )
 
 // WitnessSubscription represents an intent to be notified once new witnesses
@@ -99,12 +111,6 @@ type ChannelArbitratorConfig struct {
 	// to the switch during contract resolution.
 	ShortChanID lnwire.ShortChannelID
 
-	// BlockEpochs is an active block epoch event stream backed by an
-	// active ChainNotifier instance. We will use new block notifications
-	// sent over this channel to decide when we should go on chain to
-	// reclaim/redeem the funds in an HTLC sent to/from us.
-	BlockEpochs *chainntnfs.BlockEpochEvent
-
 	// ChainEvents is an active subscription to the chain watcher for this
 	// channel to be notified of any on-chain activity related to this
 	// channel.
@@ -142,6 +148,12 @@ type ChannelArbitratorConfig struct {
 	//
 	// TODO(roasbeef): need RPC's to combine for pendingchannels RPC
 	MarkChannelResolved func() error
+
+	// PutResolverReport records a resolver report for the channel. If the
+	// transaction provided is nil, the function should write the report
+	// in a new transaction.
+	PutResolverReport func(tx kvdb.RwTx,
+		report *channeldb.ResolverReport) error
 
 	ChainArbitratorConfig
 }
@@ -195,6 +207,21 @@ type ContractReport struct {
 	// RecoveredBalance is the total value that has been successfully swept
 	// back to the user's wallet.
 	RecoveredBalance btcutil.Amount
+}
+
+// resolverReport creates a resolve report using some of the information in the
+// contract report.
+func (c *ContractReport) resolverReport(spendTx *chainhash.Hash,
+	resolverType channeldb.ResolverType,
+	outcome channeldb.ResolverOutcome) *channeldb.ResolverReport {
+
+	return &channeldb.ResolverReport{
+		OutPoint:        c.Outpoint,
+		Amount:          c.Amount,
+		ResolverType:    resolverType,
+		ResolverOutcome: outcome,
+		SpendTxID:       spendTx,
+	}
 }
 
 // htlcSet represents the set of active HTLCs on a given commitment
@@ -295,6 +322,11 @@ type ChannelArbitrator struct {
 	// to do its duty.
 	cfg ChannelArbitratorConfig
 
+	// blocks is a channel that the arbitrator will receive new blocks on.
+	// This channel should be buffered by so that it does not block the
+	// sender.
+	blocks chan int32
+
 	// signalUpdates is a channel that any new live signals for the channel
 	// we're watching over will be sent.
 	signalUpdates chan *signalUpdateMsg
@@ -336,6 +368,7 @@ func NewChannelArbitrator(cfg ChannelArbitratorConfig,
 
 	return &ChannelArbitrator{
 		log:              log,
+		blocks:           make(chan int32, arbitratorBlockBufferSize),
 		signalUpdates:    make(chan *signalUpdateMsg),
 		htlcUpdates:      make(<-chan *ContractUpdate),
 		resolutionSignal: make(chan struct{}),
@@ -346,16 +379,58 @@ func NewChannelArbitrator(cfg ChannelArbitratorConfig,
 	}
 }
 
+// chanArbStartState contains the information from disk that we need to start
+// up a channel arbitrator.
+type chanArbStartState struct {
+	currentState ArbitratorState
+	commitSet    *CommitSet
+}
+
+// getStartState retrieves the information from disk that our channel arbitrator
+// requires to start.
+func (c *ChannelArbitrator) getStartState(tx kvdb.RTx) (*chanArbStartState,
+	error) {
+
+	// First, we'll read our last state from disk, so our internal state
+	// machine can act accordingly.
+	state, err := c.log.CurrentState(tx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Next we'll fetch our confirmed commitment set. This will only exist
+	// if the channel has been closed out on chain for modern nodes. For
+	// older nodes, this won't be found at all, and will rely on the
+	// existing written chain actions. Additionally, if this channel hasn't
+	// logged any actions in the log, then this field won't be present.
+	commitSet, err := c.log.FetchConfirmedCommitSet(tx)
+	if err != nil && err != errNoCommitSet && err != errScopeBucketNoExist {
+		return nil, err
+	}
+
+	return &chanArbStartState{
+		currentState: state,
+		commitSet:    commitSet,
+	}, nil
+}
+
 // Start starts all the goroutines that the ChannelArbitrator needs to operate.
-func (c *ChannelArbitrator) Start() error {
+// If takes a start state, which will be looked up on disk if it is not
+// provided.
+func (c *ChannelArbitrator) Start(state *chanArbStartState) error {
 	if !atomic.CompareAndSwapInt32(&c.started, 0, 1) {
 		return nil
 	}
 	c.startTimestamp = c.cfg.Clock.Now()
 
-	var (
-		err error
-	)
+	// If the state passed in is nil, we look it up now.
+	if state == nil {
+		var err error
+		state, err = c.getStartState(nil)
+		if err != nil {
+			return err
+		}
+	}
 
 	log.Debugf("Starting ChannelArbitrator(%v), htlc_set=%v",
 		c.cfg.ChanPoint, newLogClosure(func() string {
@@ -363,17 +438,11 @@ func (c *ChannelArbitrator) Start() error {
 		}),
 	)
 
-	// First, we'll read our last state from disk, so our internal state
-	// machine can act accordingly.
-	c.state, err = c.log.CurrentState()
-	if err != nil {
-		c.cfg.BlockEpochs.Cancel()
-		return err
-	}
+	// Set our state from our starting state.
+	c.state = state.currentState
 
 	_, bestHeight, err := c.cfg.ChainIO.GetBestBlock()
 	if err != nil {
-		c.cfg.BlockEpochs.Cancel()
 		return err
 	}
 
@@ -418,21 +487,11 @@ func (c *ChannelArbitrator) Start() error {
 		"triggerHeight=%v", c.cfg.ChanPoint, c.state, trigger,
 		triggerHeight)
 
-	// Next we'll fetch our confirmed commitment set. This will only exist
-	// if the channel has been closed out on chain for modern nodes. For
-	// older nodes, this won't be found at all, and will rely on the
-	// existing written chain actions. Additionally, if this channel hasn't
-	// logged any actions in the log, then this field won't be present.
-	commitSet, err := c.log.FetchConfirmedCommitSet()
-	if err != nil && err != errNoCommitSet && err != errScopeBucketNoExist {
-		return err
-	}
-
 	// We'll now attempt to advance our state forward based on the current
 	// on-chain state, and our set of active contracts.
 	startingState := c.state
 	nextState, _, err := c.advanceState(
-		triggerHeight, trigger, commitSet,
+		triggerHeight, trigger, state.commitSet,
 	)
 	if err != nil {
 		switch err {
@@ -449,7 +508,6 @@ func (c *ChannelArbitrator) Start() error {
 				c.cfg.ChanPoint)
 
 		default:
-			c.cfg.BlockEpochs.Cancel()
 			return err
 		}
 	}
@@ -470,8 +528,8 @@ func (c *ChannelArbitrator) Start() error {
 		// receive a chain event from the chain watcher than the
 		// commitment has been confirmed on chain, and before we
 		// advance our state step, we call InsertConfirmedCommitSet.
-		if err := c.relaunchResolvers(commitSet, triggerHeight); err != nil {
-			c.cfg.BlockEpochs.Cancel()
+		err := c.relaunchResolvers(state.commitSet, triggerHeight)
+		if err != nil {
 			return err
 		}
 	}
@@ -851,7 +909,11 @@ func (c *ChannelArbitrator) stateStep(
 
 		// At this point, we'll now broadcast the commitment
 		// transaction itself.
-		if err := c.cfg.PublishTx(closeTx, ""); err != nil {
+		label := labels.MakeLabel(
+			labels.LabelTypeChannelClose, &c.cfg.ShortChanID,
+		)
+
+		if err := c.cfg.PublishTx(closeTx, label); err != nil {
 			log.Errorf("ChannelArbitrator(%v): unable to broadcast "+
 				"close tx: %v", c.cfg.ChanPoint, err)
 			if err != lnwallet.ErrDoubleSpend {
@@ -969,7 +1031,7 @@ func (c *ChannelArbitrator) stateStep(
 		log.Debugf("ChannelArbitrator(%v): inserting %v contract "+
 			"resolvers", c.cfg.ChanPoint, len(htlcResolvers))
 
-		err = c.log.InsertUnresolvedContracts(htlcResolvers...)
+		err = c.log.InsertUnresolvedContracts(nil, htlcResolvers...)
 		if err != nil {
 			return StateError, closeTx, err
 		}
@@ -1032,9 +1094,6 @@ func (c *ChannelArbitrator) sweepAnchors(anchors []*lnwallet.AnchorResolution,
 	// anchors from being batched together.
 	exclusiveGroup := c.cfg.ShortChanID.ToUint64()
 
-	// Retrieve the current minimum fee rate from the sweeper.
-	minFeeRate := c.cfg.Sweeper.RelayFeePerKW()
-
 	for _, anchor := range anchors {
 		log.Debugf("ChannelArbitrator(%v): pre-confirmation sweep of "+
 			"anchor of tx %v", c.cfg.ChanPoint, anchor.CommitAnchor)
@@ -1045,18 +1104,25 @@ func (c *ChannelArbitrator) sweepAnchors(anchors []*lnwallet.AnchorResolution,
 			input.CommitmentAnchor,
 			&anchor.AnchorSignDescriptor,
 			heightHint,
+			&input.TxInfo{
+				Fee:    anchor.CommitFee,
+				Weight: anchor.CommitWeight,
+			},
 		)
 
-		// Sweep anchor output with the minimum fee rate. This usually
-		// (up to a min relay fee of 3 sat/b) means that the anchor
-		// sweep will be economical. Also signal that this is a force
-		// sweep. If the user decides to bump the fee on the anchor
-		// sweep, it will be swept even if it isn't economical.
+		// Sweep anchor output with a confirmation target fee
+		// preference. Because this is a cpfp-operation, the anchor will
+		// only be attempted to sweep when the current fee estimate for
+		// the confirmation target exceeds the commit fee rate.
+		//
+		// Also signal that this is a force sweep, so that the anchor
+		// will be swept even if it isn't economical purely based on the
+		// anchor value.
 		_, err := c.cfg.Sweeper.SweepInput(
 			&anchorInput,
 			sweep.Params{
 				Fee: sweep.FeePreference{
-					FeeRate: minFeeRate,
+					ConfTarget: anchorSweepConfTarget,
 				},
 				Force:          true,
 				ExclusiveGroup: &exclusiveGroup,
@@ -1737,8 +1803,10 @@ func (c *ChannelArbitrator) prepContractResolutions(
 	// resolver so they each can do their duty.
 	resolverCfg := ResolverConfig{
 		ChannelArbitratorConfig: c.cfg,
-		Checkpoint: func(res ContractResolver) error {
-			return c.log.InsertUnresolvedContracts(res)
+		Checkpoint: func(res ContractResolver,
+			reports ...*channeldb.ResolverReport) error {
+
+			return c.log.InsertUnresolvedContracts(reports, res)
 		},
 	}
 
@@ -1962,7 +2030,7 @@ func (c *ChannelArbitrator) resolveContract(currentContract ContractResolver) {
 			switch {
 			// If this contract produced another, then this means
 			// the current contract was only able to be partially
-			// resolved in this step. So we'll not a contract swap
+			// resolved in this step. So we'll do a contract swap
 			// within our logs: the new contract will take the
 			// place of the old one.
 			case nextContract != nil:
@@ -2057,7 +2125,7 @@ func (c *ChannelArbitrator) UpdateContractSignals(newSignals *ContractSignals) {
 
 // channelAttendant is the primary goroutine that acts at the judicial
 // arbitrator between our channel state, the remote channel peer, and the
-// blockchain Our judge). This goroutine will ensure that we faithfully execute
+// blockchain (Our judge). This goroutine will ensure that we faithfully execute
 // all clauses of our contract in the case that we need to go on-chain for a
 // dispute. Currently, two such conditions warrant our intervention: when an
 // outgoing HTLC is about to timeout, and when we know the pre-image for an
@@ -2071,7 +2139,6 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 
 	// TODO(roasbeef): tell top chain arb we're done
 	defer func() {
-		c.cfg.BlockEpochs.Cancel()
 		c.wg.Done()
 	}()
 
@@ -2081,11 +2148,11 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 		// A new block has arrived, we'll examine all the active HTLC's
 		// to see if any of them have expired, and also update our
 		// track of the best current height.
-		case blockEpoch, ok := <-c.cfg.BlockEpochs.Epochs:
+		case blockHeight, ok := <-c.blocks:
 			if !ok {
 				return
 			}
-			bestHeight = blockEpoch.Height
+			bestHeight = blockHeight
 
 			// If we're not in the default state, then we can
 			// ignore this signal as we're waiting for contract
@@ -2153,6 +2220,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 
 			err := c.cfg.MarkChannelClosed(
 				closeInfo.ChannelCloseSummary,
+				channeldb.ChanStatusCoopBroadcasted,
 			)
 			if err != nil {
 				log.Errorf("Unable to mark channel closed: "+
@@ -2223,6 +2291,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			// close status of the channel.
 			err = c.cfg.MarkChannelClosed(
 				closeInfo.ChannelCloseSummary,
+				channeldb.ChanStatusLocalCloseInitiator,
 			)
 			if err != nil {
 				log.Errorf("Unable to mark "+

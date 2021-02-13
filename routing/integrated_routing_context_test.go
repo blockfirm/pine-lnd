@@ -58,15 +58,16 @@ func newIntegratedRoutingContext(t *testing.T) *integratedRoutingContext {
 		finalExpiry: 40,
 
 		mcCfg: MissionControlConfig{
-			PenaltyHalfLife:       30 * time.Minute,
-			AprioriHopProbability: 0.6,
-			AprioriWeight:         0.5,
-			SelfNode:              source.pubkey,
+			ProbabilityEstimatorCfg: ProbabilityEstimatorCfg{
+				PenaltyHalfLife:       30 * time.Minute,
+				AprioriHopProbability: 0.6,
+				AprioriWeight:         0.5,
+			},
 		},
 
 		pathFindingCfg: PathFindingConfig{
-			PaymentAttemptPenalty: 1000,
-			MinProbability:        0.01,
+			AttemptCost:    1000,
+			MinProbability: 0.01,
 		},
 
 		source: source,
@@ -88,8 +89,16 @@ func (h htlcAttempt) String() string {
 
 // testPayment launches a test payment and asserts that it is completed after
 // the expected number of attempts.
-func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
-	error) {
+func (c *integratedRoutingContext) testPayment(maxParts uint32,
+	destFeatureBits ...lnwire.FeatureBit) ([]htlcAttempt, error) {
+
+	// We start out with the base set of MPP feature bits. If the caller
+	// overrides this set of bits, then we'll use their feature bits
+	// entirely.
+	baseFeatureBits := mppFeatures
+	if len(destFeatureBits) != 0 {
+		baseFeatureBits = lnwire.NewRawFeatureVector(destFeatureBits...)
+	}
 
 	var (
 		nextPid  uint64
@@ -105,7 +114,9 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
 	dbPath := file.Name()
 	defer os.Remove(dbPath)
 
-	db, err := kvdb.Open(kvdb.BoltBackendName, dbPath, true)
+	db, err := kvdb.Open(
+		kvdb.BoltBackendName, dbPath, true, kvdb.DefaultDBTimeout,
+	)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -113,7 +124,7 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
 
 	// Instantiate a new mission control with the current configuration
 	// values.
-	mc, err := NewMissionControl(db, &c.mcCfg)
+	mc, err := NewMissionControl(db, c.source.pubkey, &c.mcCfg)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -134,7 +145,7 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
 		FeeLimit:       lnwire.MaxMilliSatoshi,
 		Target:         c.target.pubkey,
 		PaymentAddr:    &paymentAddr,
-		DestFeatures:   lnwire.NewFeatureVector(mppFeatures, nil),
+		DestFeatures:   lnwire.NewFeatureVector(baseFeatureBits, nil),
 		Amount:         c.amt,
 		CltvLimit:      math.MaxUint32,
 		MaxParts:       maxParts,

@@ -7,7 +7,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/sweep"
@@ -15,7 +18,7 @@ import (
 
 type commitSweepResolverTestContext struct {
 	resolver           *commitSweepResolver
-	notifier           *mockNotifier
+	notifier           *mock.ChainNotifier
 	sweeper            *mockSweeper
 	resolverResultChan chan resolveResult
 	t                  *testing.T
@@ -24,10 +27,10 @@ type commitSweepResolverTestContext struct {
 func newCommitSweepResolverTestContext(t *testing.T,
 	resolution *lnwallet.CommitOutputResolution) *commitSweepResolverTestContext {
 
-	notifier := &mockNotifier{
-		epochChan: make(chan *chainntnfs.BlockEpoch),
-		spendChan: make(chan *chainntnfs.SpendDetail),
-		confChan:  make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 
 	sweeper := newMockSweeper()
@@ -39,11 +42,18 @@ func newCommitSweepResolverTestContext(t *testing.T,
 			Notifier: notifier,
 			Sweeper:  sweeper,
 		},
+		PutResolverReport: func(_ kvdb.RwTx,
+			_ *channeldb.ResolverReport) error {
+
+			return nil
+		},
 	}
 
 	cfg := ResolverConfig{
 		ChannelArbitratorConfig: chainCfg,
-		Checkpoint: func(_ ContractResolver) error {
+		Checkpoint: func(_ ContractResolver,
+			_ ...*channeldb.ResolverReport) error {
+
 			checkPointChan <- struct{}{}
 			return nil
 		},
@@ -74,7 +84,7 @@ func (i *commitSweepResolverTestContext) resolve() {
 }
 
 func (i *commitSweepResolverTestContext) notifyEpoch(height int32) {
-	i.notifier.epochChan <- &chainntnfs.BlockEpoch{
+	i.notifier.EpochChan <- &chainntnfs.BlockEpoch{
 		Height: height,
 	}
 }
@@ -93,15 +103,19 @@ func (i *commitSweepResolverTestContext) waitForResult() {
 }
 
 type mockSweeper struct {
-	sweptInputs   chan input.Input
-	updatedInputs chan wire.OutPoint
-	sweepErr      error
+	sweptInputs       chan input.Input
+	updatedInputs     chan wire.OutPoint
+	sweepTx           *wire.MsgTx
+	sweepErr          error
+	createSweepTxChan chan *wire.MsgTx
 }
 
 func newMockSweeper() *mockSweeper {
 	return &mockSweeper{
-		sweptInputs:   make(chan input.Input),
-		updatedInputs: make(chan wire.OutPoint),
+		sweptInputs:       make(chan input.Input),
+		updatedInputs:     make(chan wire.OutPoint),
+		sweepTx:           &wire.MsgTx{},
+		createSweepTxChan: make(chan *wire.MsgTx),
 	}
 }
 
@@ -112,7 +126,7 @@ func (s *mockSweeper) SweepInput(input input.Input, params sweep.Params) (
 
 	result := make(chan sweep.Result, 1)
 	result <- sweep.Result{
-		Tx:  &wire.MsgTx{},
+		Tx:  s.sweepTx,
 		Err: s.sweepErr,
 	}
 	return result, nil
@@ -121,7 +135,9 @@ func (s *mockSweeper) SweepInput(input input.Input, params sweep.Params) (
 func (s *mockSweeper) CreateSweepTx(inputs []input.Input, feePref sweep.FeePreference,
 	currentBlockHeight uint32) (*wire.MsgTx, error) {
 
-	return nil, nil
+	// We will wait for the test to supply the sweep tx to return.
+	sweepTx := <-s.createSweepTxChan
+	return sweepTx, nil
 }
 
 func (s *mockSweeper) RelayFeePerKW() chainfee.SatPerKWeight {
@@ -135,7 +151,7 @@ func (s *mockSweeper) UpdateParams(input wire.OutPoint,
 
 	result := make(chan sweep.Result, 1)
 	result <- sweep.Result{
-		Tx: &wire.MsgTx{},
+		Tx: s.sweepTx,
 	}
 	return result, nil
 }
@@ -158,12 +174,43 @@ func TestCommitSweepResolverNoDelay(t *testing.T) {
 	}
 
 	ctx := newCommitSweepResolverTestContext(t, &res)
+
+	// Replace our checkpoint with one which will push reports into a
+	// channel for us to consume. We replace this function on the resolver
+	// itself because it is created by the test context.
+	reportChan := make(chan *channeldb.ResolverReport)
+	ctx.resolver.Checkpoint = func(_ ContractResolver,
+		reports ...*channeldb.ResolverReport) error {
+
+		// Send all of our reports into the channel.
+		for _, report := range reports {
+			reportChan <- report
+		}
+
+		return nil
+	}
+
 	ctx.resolve()
 
-	ctx.notifier.confChan <- &chainntnfs.TxConfirmation{}
+	spendTx := &wire.MsgTx{}
+	spendHash := spendTx.TxHash()
+	ctx.notifier.ConfChan <- &chainntnfs.TxConfirmation{
+		Tx: spendTx,
+	}
 
 	// No csv delay, so the input should be swept immediately.
 	<-ctx.sweeper.sweptInputs
+
+	amt := btcutil.Amount(res.SelfOutputSignDesc.Output.Value)
+	expectedReport := &channeldb.ResolverReport{
+		OutPoint:        wire.OutPoint{},
+		Amount:          amt,
+		ResolverType:    channeldb.ResolverTypeCommit,
+		ResolverOutcome: channeldb.ResolverOutcomeClaimed,
+		SpendTxID:       &spendHash,
+	}
+
+	assertResolverReport(t, reportChan, expectedReport)
 
 	ctx.waitForResult()
 }
@@ -192,6 +239,21 @@ func testCommitSweepResolverDelay(t *testing.T, sweepErr error) {
 
 	ctx := newCommitSweepResolverTestContext(t, &res)
 
+	// Replace our checkpoint with one which will push reports into a
+	// channel for us to consume. We replace this function on the resolver
+	// itself because it is created by the test context.
+	reportChan := make(chan *channeldb.ResolverReport)
+	ctx.resolver.Checkpoint = func(_ ContractResolver,
+		reports ...*channeldb.ResolverReport) error {
+
+		// Send all of our reports into the channel.
+		for _, report := range reports {
+			reportChan <- report
+		}
+
+		return nil
+	}
+
 	// Setup whether we expect the sweeper to receive a sweep error in this
 	// test case.
 	ctx.sweeper.sweepErr = sweepErr
@@ -210,7 +272,7 @@ func testCommitSweepResolverDelay(t *testing.T, sweepErr error) {
 
 	ctx.resolve()
 
-	ctx.notifier.confChan <- &chainntnfs.TxConfirmation{
+	ctx.notifier.ConfChan <- &chainntnfs.TxConfirmation{
 		BlockHeight: testInitialBlockHeight - 1,
 	}
 
@@ -238,6 +300,22 @@ func testCommitSweepResolverDelay(t *testing.T, sweepErr error) {
 	ctx.notifyEpoch(testInitialBlockHeight + 1)
 
 	<-ctx.sweeper.sweptInputs
+
+	// Set the resolution report outcome based on whether our sweep
+	// succeeded.
+	outcome := channeldb.ResolverOutcomeClaimed
+	if sweepErr != nil {
+		outcome = channeldb.ResolverOutcomeUnclaimed
+	}
+	sweepTx := ctx.sweeper.sweepTx.TxHash()
+
+	assertResolverReport(t, reportChan, &channeldb.ResolverReport{
+		OutPoint:        outpoint,
+		ResolverType:    channeldb.ResolverTypeCommit,
+		ResolverOutcome: outcome,
+		Amount:          btcutil.Amount(amt),
+		SpendTxID:       &sweepTx,
+	})
 
 	ctx.waitForResult()
 

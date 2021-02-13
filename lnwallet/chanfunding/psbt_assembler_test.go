@@ -18,6 +18,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -34,7 +35,7 @@ func TestPsbtIntent(t *testing.T) {
 
 	// Create a simple assembler and ask it to provision a channel to get
 	// the funding intent.
-	a := NewPsbtAssembler(chanCapacity, nil, &params)
+	a := NewPsbtAssembler(chanCapacity, nil, &params, true)
 	intent, err := a.ProvisionChannel(&Request{LocalAmt: chanCapacity})
 	if err != nil {
 		t.Fatalf("error provisioning channel: %v", err)
@@ -215,7 +216,7 @@ func TestPsbtIntentBasePsbt(t *testing.T) {
 
 	// Now as the next step, create a new assembler/intent pair with a base
 	// PSBT to see that we can add an additional output to it.
-	a := NewPsbtAssembler(chanCapacity, pendingPsbt, &params)
+	a := NewPsbtAssembler(chanCapacity, pendingPsbt, &params, true)
 	intent, err := a.ProvisionChannel(&Request{LocalAmt: chanCapacity})
 	if err != nil {
 		t.Fatalf("error provisioning channel: %v", err)
@@ -373,7 +374,7 @@ func TestPsbtVerify(t *testing.T) {
 
 	// Create a simple assembler and ask it to provision a channel to get
 	// the funding intent.
-	a := NewPsbtAssembler(chanCapacity, nil, &params)
+	a := NewPsbtAssembler(chanCapacity, nil, &params, true)
 	intent, err := a.ProvisionChannel(&Request{LocalAmt: chanCapacity})
 	if err != nil {
 		t.Fatalf("error provisioning channel: %v", err)
@@ -496,11 +497,49 @@ func TestPsbtFinalize(t *testing.T) {
 				return i.Finalize(p)
 			},
 		},
+		{
+			name:        "raw tx - nil transaction",
+			expectedErr: "raw transaction is nil",
+			doFinalize: func(amt int64, p *psbt.Packet,
+				i *PsbtIntent) error {
+
+				return i.FinalizeRawTX(nil)
+			},
+		},
+		{
+			name: "raw tx - no witness data in raw tx",
+			expectedErr: "inputs not signed: input 0 has no " +
+				"signature data attached",
+			doFinalize: func(amt int64, p *psbt.Packet,
+				i *PsbtIntent) error {
+
+				rawTx, err := psbt.Extract(p)
+				require.NoError(t, err)
+				rawTx.TxIn[0].Witness = nil
+
+				return i.FinalizeRawTX(rawTx)
+			},
+		},
+		{
+			name:        "happy path",
+			expectedErr: "",
+			doFinalize: func(amt int64, p *psbt.Packet,
+				i *PsbtIntent) error {
+
+				err := i.Finalize(p)
+				require.NoError(t, err)
+
+				require.Equal(t, PsbtFinalized, i.State)
+				require.NotNil(t, i.FinalTX)
+
+				return nil
+			},
+		},
 	}
 
 	// Create a simple assembler and ask it to provision a channel to get
 	// the funding intent.
-	a := NewPsbtAssembler(chanCapacity, nil, &params)
+	a := NewPsbtAssembler(chanCapacity, nil, &params, true)
 	intent, err := a.ProvisionChannel(&Request{LocalAmt: chanCapacity})
 	if err != nil {
 		t.Fatalf("error provisioning channel: %v", err)

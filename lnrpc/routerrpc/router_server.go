@@ -8,12 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcutil"
+	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
 
@@ -32,6 +35,11 @@ const (
 
 var (
 	errServerShuttingDown = errors.New("routerrpc server shutting down")
+
+	// ErrInterceptorAlreadyExists is an error returned when the a new stream
+	// is opened and there is already one active interceptor.
+	// The user must disconnect prior to open another stream.
+	ErrInterceptorAlreadyExists = errors.New("interceptor already exists")
 
 	// macaroonOps are the set of capabilities that our minted macaroon (if
 	// it doesn't already exist) will have.
@@ -72,6 +80,13 @@ var (
 			Entity: "offchain",
 			Action: "read",
 		}},
+		"/routerrpc.Router/GetMissionControlConfig": {{
+			Entity: "offchain",
+			Action: "read",
+		}}, "/routerrpc.Router/SetMissionControlConfig": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
 		"/routerrpc.Router/QueryProbability": {{
 			Entity: "offchain",
 			Action: "read",
@@ -96,6 +111,10 @@ var (
 			Entity: "offchain",
 			Action: "read",
 		}},
+		"/routerrpc.Router/HtlcInterceptor": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
 	}
 
 	// DefaultRouterMacFilename is the default name of the router macaroon
@@ -107,8 +126,9 @@ var (
 // Server is a stand alone sub RPC server which exposes functionality that
 // allows clients to route arbitrary payment through the Lightning Network.
 type Server struct {
-	started  int32 // To be used atomically.
-	shutdown int32 // To be used atomically.
+	started                  int32 // To be used atomically.
+	shutdown                 int32 // To be used atomically.
+	forwardInterceptorActive int32 // To be used atomically.
 
 	cfg *Config
 
@@ -118,16 +138,6 @@ type Server struct {
 // A compile time check to ensure that Server fully implements the RouterServer
 // gRPC service.
 var _ RouterServer = (*Server)(nil)
-
-// fileExists reports whether the named file or directory exists.
-func fileExists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
-}
 
 // New creates a new instance of the RouterServer given a configuration struct
 // that contains all external dependencies. If the target macaroon exists, and
@@ -144,17 +154,20 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	}
 
 	// Now that we know the full path of the router macaroon, we can check
-	// to see if we need to create it or not.
+	// to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
 	macFilePath := cfg.RouterMacPath
-	if !fileExists(macFilePath) && cfg.MacService != nil {
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Making macaroons for Router RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the router macaroon doesn't yet,
 		// exist, so we need to create it with the help of the main
 		// macaroon service.
-		routerMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		routerMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -166,7 +179,7 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, routerMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -223,6 +236,28 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 	log.Debugf("Router RPC server successfully register with root gRPC " +
 		"server")
 
+	return nil
+}
+
+// RegisterWithRestServer will be called by the root REST mux to direct a sub
+// RPC server to register itself with the main REST mux server. Until this is
+// called, each sub-server won't be able to have requests routed towards it.
+//
+// NOTE: This is part of the lnrpc.SubServer interface.
+func (s *Server) RegisterWithRestServer(ctx context.Context,
+	mux *runtime.ServeMux, dest string, opts []grpc.DialOption) error {
+
+	// We make sure that we register it with the main REST server to ensure
+	// all our methods are routed properly.
+	err := RegisterRouterHandlerFromEndpoint(ctx, mux, dest, opts)
+	if err != nil {
+		log.Errorf("Could not register Router REST server "+
+			"with root REST server: %v", err)
+		return err
+	}
+
+	log.Debugf("Router REST server successfully registered with " +
+		"root REST server")
 	return nil
 }
 
@@ -286,11 +321,13 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 	// that target amount, we'll only request a single route. Set a
 	// restriction for the default CLTV limit, otherwise we can find a route
 	// that exceeds it and is useless to us.
+	mc := s.cfg.RouterBackend.MissionControl
 	route, err := s.cfg.Router.FindRoute(
 		s.cfg.RouterBackend.SelfNode, destNode, amtMsat,
 		&routing.RestrictParams{
-			FeeLimit:  feeLimit,
-			CltvLimit: s.cfg.RouterBackend.MaxTotalTimelock,
+			FeeLimit:          feeLimit,
+			CltvLimit:         s.cfg.RouterBackend.MaxTotalTimelock,
+			ProbabilitySource: mc.GetProbability,
 		}, nil, nil, s.cfg.RouterBackend.DefaultFinalCltvDelta,
 	)
 	if err != nil {
@@ -339,6 +376,13 @@ func (s *Server) SendToRouteV2(ctx context.Context,
 		return rpcAttempt, nil
 	}
 
+	// Transform user errors to grpc code.
+	if err == channeldb.ErrPaymentInFlight ||
+		err == channeldb.ErrAlreadyPaid {
+
+		return nil, status.Error(codes.AlreadyExists, err.Error())
+	}
+
 	return nil, err
 }
 
@@ -353,6 +397,46 @@ func (s *Server) ResetMissionControl(ctx context.Context,
 	}
 
 	return &ResetMissionControlResponse{}, nil
+}
+
+// GetMissionControlConfig returns our current mission control config.
+func (s *Server) GetMissionControlConfig(ctx context.Context,
+	req *GetMissionControlConfigRequest) (*GetMissionControlConfigResponse,
+	error) {
+
+	cfg := s.cfg.RouterBackend.MissionControl.GetConfig()
+	return &GetMissionControlConfigResponse{
+		Config: &MissionControlConfig{
+			HalfLifeSeconds:             uint64(cfg.PenaltyHalfLife.Seconds()),
+			HopProbability:              float32(cfg.AprioriHopProbability),
+			Weight:                      float32(cfg.AprioriWeight),
+			MaximumPaymentResults:       uint32(cfg.MaxMcHistory),
+			MinimumFailureRelaxInterval: uint64(cfg.MinFailureRelaxInterval.Seconds()),
+		},
+	}, nil
+}
+
+// SetMissionControlConfig returns our current mission control config.
+func (s *Server) SetMissionControlConfig(ctx context.Context,
+	req *SetMissionControlConfigRequest) (*SetMissionControlConfigResponse,
+	error) {
+
+	cfg := &routing.MissionControlConfig{
+		ProbabilityEstimatorCfg: routing.ProbabilityEstimatorCfg{
+			PenaltyHalfLife: time.Duration(
+				req.Config.HalfLifeSeconds,
+			) * time.Second,
+			AprioriHopProbability: float64(req.Config.HopProbability),
+			AprioriWeight:         float64(req.Config.Weight),
+		},
+		MaxMcHistory: int(req.Config.MaximumPaymentResults),
+		MinFailureRelaxInterval: time.Duration(
+			req.Config.MinimumFailureRelaxInterval,
+		) * time.Second,
+	}
+
+	return &SetMissionControlConfigResponse{},
+		s.cfg.RouterBackend.MissionControl.SetConfig(cfg)
 }
 
 // QueryMissionControl exposes the internal mission control state to callers. It
@@ -528,9 +612,17 @@ func (s *Server) BuildRoute(ctx context.Context,
 		outgoingChan = &req.OutgoingChanId
 	}
 
+	var payAddr *[32]byte
+	if len(req.PaymentAddr) != 0 {
+		var backingPayAddr [32]byte
+		copy(backingPayAddr[:], req.PaymentAddr)
+
+		payAddr = &backingPayAddr
+	}
+
 	// Build the route and return it to the caller.
 	route, err := s.cfg.Router.BuildRoute(
-		amt, hops, outgoingChan, req.FinalCltvDelta,
+		amt, hops, outgoingChan, req.FinalCltvDelta, payAddr,
 	)
 	if err != nil {
 		return nil, err
@@ -585,4 +677,23 @@ func (s *Server) SubscribeHtlcEvents(req *SubscribeHtlcEventsRequest,
 			return errServerShuttingDown
 		}
 	}
+}
+
+// HtlcInterceptor is a bidirectional stream for streaming interception
+// requests to the caller.
+// Upon connection it does the following:
+// 1. Check if there is already a live stream, if yes it rejects the request.
+// 2. Regsitered a ForwardInterceptor
+// 3. Delivers to the caller every √√ and detect his answer.
+// It uses a local implementation of holdForwardsStore to keep all the hold
+// forwards and find them when manual resolution is later needed.
+func (s *Server) HtlcInterceptor(stream Router_HtlcInterceptorServer) error {
+	// We ensure there is only one interceptor at a time.
+	if !atomic.CompareAndSwapInt32(&s.forwardInterceptorActive, 0, 1) {
+		return ErrInterceptorAlreadyExists
+	}
+	defer atomic.CompareAndSwapInt32(&s.forwardInterceptorActive, 1, 0)
+
+	// run the forward interceptor.
+	return newForwardInterceptor(s, stream).run()
 }

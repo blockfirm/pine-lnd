@@ -20,6 +20,9 @@ type Config struct {
 
 	// NoAnchors unsets any bits signaling support for anchor outputs.
 	NoAnchors bool
+
+	// NoWumbo unsets any bits signalling support for wumbo channels.
+	NoWumbo bool
 }
 
 // Manager is responsible for generating feature vectors for different requested
@@ -36,7 +39,7 @@ func NewManager(cfg Config) (*Manager, error) {
 	return newManager(cfg, defaultSetDesc)
 }
 
-// newManager creates a new feeature Manager, applying any custom modifications
+// newManager creates a new feature Manager, applying any custom modifications
 // to its feature sets before returning. This method accepts the setDesc as its
 // own parameter so that it can be unit tested.
 func newManager(cfg Config, desc setDesc) (*Manager, error) {
@@ -80,8 +83,12 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 			raw.Unset(lnwire.StaticRemoteKeyRequired)
 		}
 		if cfg.NoAnchors {
-			raw.Unset(lnwire.AnchorsOptional)
-			raw.Unset(lnwire.AnchorsRequired)
+			raw.Unset(lnwire.AnchorsZeroFeeHtlcTxOptional)
+			raw.Unset(lnwire.AnchorsZeroFeeHtlcTxRequired)
+		}
+		if cfg.NoWumbo {
+			raw.Unset(lnwire.WumboChannelsOptional)
+			raw.Unset(lnwire.WumboChannelsRequired)
 		}
 
 		// Ensure that all of our feature sets properly set any

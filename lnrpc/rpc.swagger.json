@@ -4,10 +4,6 @@
     "title": "rpc.proto",
     "version": "version not set"
   },
-  "schemes": [
-    "http",
-    "https"
-  ],
   "consumes": [
     "application/json"
   ],
@@ -25,6 +21,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcWalletBalanceResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "tags": [
@@ -34,13 +36,19 @@
     },
     "/v1/balance/channels": {
       "get": {
-        "summary": "lncli: `channelbalance`\nChannelBalance returns the total funds available across all open channels\nin satoshis.",
+        "summary": "lncli: `channelbalance`\nChannelBalance returns a report on the total funds across all open channels,\ncategorized in local/remote, pending local/remote and unsettled local/remote\nbalances.",
         "operationId": "ChannelBalance",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcChannelBalanceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -58,6 +66,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcListChannelsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -112,6 +126,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcChannelPoint"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -131,13 +151,19 @@
     },
     "/v1/channels/abandon/{channel_point.funding_txid_str}/{channel_point.output_index}": {
       "delete": {
-        "summary": "lncli: `abandonchannel`\nAbandonChannel removes all channel state from the database except for a\nclose summary. This method can be used to get rid of permanently unusable\nchannels due to bugs fixed in newer versions of lnd. Only available\nwhen in debug builds of lnd.",
+        "summary": "lncli: `abandonchannel`\nAbandonChannel removes all channel state from the database except for a\nclose summary. This method can be used to get rid of permanently unusable\nchannels due to bugs fixed in newer versions of lnd. This method can also be\nused to remove externally funded channels where the funding transaction was\nnever broadcast. Only available for non-externally funded channels in dev\nbuild.",
         "operationId": "AbandonChannel",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcAbandonChannelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -164,6 +190,13 @@
             "required": false,
             "type": "string",
             "format": "byte"
+          },
+          {
+            "name": "pending_funding_shim_only",
+            "in": "query",
+            "required": false,
+            "type": "boolean",
+            "format": "boolean"
           }
         ],
         "tags": [
@@ -180,6 +213,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcChanBackupSnapshot"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -198,6 +237,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcRestoreBackupResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -215,6 +260,38 @@
         ]
       }
     },
+    "/v1/channels/backup/subscribe": {
+      "get": {
+        "summary": "SubscribeChannelBackups allows a client to sub-subscribe to the most up to\ndate information concerning the state of all channel backups. Each time a\nnew channel is added, we return the new set of channels, along with a\nmulti-chan backup containing the backup info for all channels. Each time a\nchannel is closed, we send a new update, which contains new new chan back\nups, but the updated set of encrypted multi-chan backups with the closed\nchannel(s) removed.",
+        "operationId": "SubscribeChannelBackups",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcChanBackupSnapshot"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcChanBackupSnapshot"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
     "/v1/channels/backup/verify": {
       "post": {
         "summary": "VerifyChanBackup allows a caller to verify the integrity of a channel backup\nsnapshot. This method will accept either a packed Single or a packed Multi.\nSpecifying both will result in an error.",
@@ -224,6 +301,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcVerifyChanBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -251,6 +334,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcChannelBackup"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -293,6 +382,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcClosedChannelsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -355,6 +450,86 @@
             "schema": {
               "$ref": "#/definitions/lnrpcPendingChannelsResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/channels/stream": {
+      "post": {
+        "summary": "lncli: `openchannel`\nOpenChannel attempts to open a singly funded channel specified in the\nrequest to a remote peer. Users are able to specify a target number of\nblocks that the funding transaction should be confirmed in, or a manual fee\nrate to us for the funding transaction. If neither are specified, then a\nlax block confirmation target is used. Each OpenStatusUpdate will return\nthe pending channel ID of the in-progress channel. Depending on the\narguments specified in the OpenChannelRequest, this pending channel ID can\nthen be used to manually progress the channel funding flow.",
+        "operationId": "OpenChannel",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcOpenStatusUpdate"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcOpenStatusUpdate"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/lnrpcOpenChannelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/channels/subscribe": {
+      "get": {
+        "summary": "SubscribeChannelEvents creates a uni-directional stream from the server to\nthe client in which any updates relevant to the state of the channels are\nsent over. Events include new active channels, inactive channels, and closed\nchannels.",
+        "operationId": "SubscribeChannelEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcChannelEventUpdate"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcChannelEventUpdate"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "tags": [
@@ -371,6 +546,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcSendResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -399,6 +580,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcSendResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -424,7 +611,22 @@
           "200": {
             "description": "A successful response.(streaming responses)",
             "schema": {
-              "$ref": "#/x-stream-definitions/lnrpcCloseStatusUpdate"
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcCloseStatusUpdate"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcCloseStatusUpdate"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -499,6 +701,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcPolicyUpdateResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -508,6 +716,39 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/lnrpcPolicyUpdateRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/debuglevel": {
+      "post": {
+        "summary": "lncli: `debuglevel`\nDebugLevel allows a caller to programmatically set the logging verbosity of\nlnd. The logging can be targeted according to a coarse daemon-wide logging\nlevel, or in a granular fashion to specify the logging for a target\nsub-system.",
+        "operationId": "DebugLevel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcDebugLevelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/lnrpcDebugLevelRequest"
             }
           }
         ],
@@ -526,8 +767,47 @@
             "schema": {
               "$ref": "#/definitions/lnrpcFeeReportResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/funding/step": {
+      "post": {
+        "summary": "FundingStateStep is an advanced funding related call that allows the caller\nto either execute some preparatory steps for a funding workflow, or\nmanually progress a funding workflow. The primary way a funding flow is\nidentified is via its pending channel ID. As an example, this method can be\nused to specify that we're expecting a funding flow for a particular\npending channel ID, for which we need to use specific parameters.\nAlternatively, this can be used to interactively drive PSBT signing for\nfunding for partially complete funding transactions.",
+        "operationId": "FundingStateStep",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcFundingStateStepResp"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/lnrpcFundingTransitionMsg"
+            }
+          }
+        ],
         "tags": [
           "Lightning"
         ]
@@ -542,6 +822,35 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcGetInfoResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/getrecoveryinfo": {
+      "get": {
+        "summary": "* lncli: `getrecoveryinfo`\nGetRecoveryInfo returns information concerning the recovery mode including\nwhether it's in a recovery mode, whether the recovery is finished, and the\nprogress made so far.",
+        "operationId": "GetRecoveryInfo",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcGetRecoveryInfoResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -559,6 +868,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcChannelGraph"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -587,6 +902,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcChannelEdge"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -614,6 +935,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcNetworkInfo"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "tags": [
@@ -630,6 +957,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcNodeInfo"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -665,6 +998,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcNodeMetricsResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -692,12 +1031,19 @@
     "/v1/graph/routes/{pub_key}/{amt}": {
       "get": {
         "summary": "lncli: `queryroutes`\nQueryRoutes attempts to query the daemon's Channel Router for a possible\nroute to a target destination capable of carrying a specific amount of\nsatoshis. The returned route contains the full details required to craft and\nsend an HTLC, also including the necessary information that should be\npresent within the Sphinx packet encapsulated within the HTLC.",
+        "description": "When using REST, the `dest_custom_records` map type can be set by appending\n`\u0026dest_custom_records[\u003crecord_number\u003e]=\u003crecord_data_base64_url_encoded\u003e`\nto the URL. Unfortunately this map type doesn't appear in the REST API\ndocumentation because of a bug in the grpc-gateway library.",
         "operationId": "QueryRoutes",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcQueryRoutesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -833,12 +1179,50 @@
                 "PAYMENT_ADDR_REQ",
                 "PAYMENT_ADDR_OPT",
                 "MPP_REQ",
-                "MPP_OPT"
+                "MPP_OPT",
+                "WUMBO_CHANNELS_REQ",
+                "WUMBO_CHANNELS_OPT",
+                "ANCHORS_REQ",
+                "ANCHORS_OPT",
+                "ANCHORS_ZERO_FEE_HTLC_REQ",
+                "ANCHORS_ZERO_FEE_HTLC_OPT"
               ]
             },
             "collectionFormat": "multi"
           }
         ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/graph/subscribe": {
+      "get": {
+        "summary": "SubscribeChannelGraph launches a streaming RPC that allows the caller to\nreceive notifications upon any changes to the channel graph topology from\nthe point of view of the responding node. Events notified include: new\nnodes coming online, nodes updating their authenticated attributes, new\nchannels being advertised, updates in the routing policy for a directional\nchannel edge, and when channels are closed on-chain.",
+        "operationId": "SubscribeChannelGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcGraphTopologyUpdate"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcGraphTopologyUpdate"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
         "tags": [
           "Lightning"
         ]
@@ -853,6 +1237,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcInvoice"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -887,6 +1277,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcListInvoiceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -937,6 +1333,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcAddInvoiceResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -962,7 +1364,22 @@
           "200": {
             "description": "A successful response.(streaming responses)",
             "schema": {
-              "$ref": "#/x-stream-definitions/lnrpcInvoice"
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcInvoice"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcInvoice"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -999,6 +1416,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcBakeMacaroonResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -1016,6 +1439,85 @@
         ]
       }
     },
+    "/v1/macaroon/ids": {
+      "get": {
+        "summary": "lncli: `listmacaroonids`\nListMacaroonIDs returns all root key IDs that are in use.",
+        "operationId": "ListMacaroonIDs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcListMacaroonIDsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/macaroon/permissions": {
+      "get": {
+        "summary": "lncli: `listpermissions`\nListPermissions lists all RPC method URIs and their required macaroon\npermissions to access them.",
+        "operationId": "ListPermissions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcListPermissionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/macaroon/{root_key_id}": {
+      "delete": {
+        "summary": "lncli: `deletemacaroonid`\nDeleteMacaroonID deletes the specified macaroon ID and invalidates all\nmacaroons derived from that ID.",
+        "operationId": "DeleteMacaroonID",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcDeleteMacaroonIDResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "root_key_id",
+            "description": "The root key ID to be removed.",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "uint64"
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
     "/v1/newaddress": {
       "get": {
         "summary": "lncli: `newaddress`\nNewAddress creates a new address under control of the local wallet.",
@@ -1025,6 +1527,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcNewAddressResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1058,6 +1566,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcListPaymentsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1108,6 +1622,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcDeleteAllPaymentsResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "tags": [
@@ -1124,6 +1644,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcPayReq"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1151,6 +1677,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcListPeersResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -1176,6 +1708,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcConnectPeerResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -1193,6 +1731,38 @@
         ]
       }
     },
+    "/v1/peers/subscribe": {
+      "get": {
+        "summary": "SubscribePeerEvents creates a uni-directional stream from the server to\nthe client in which any events relevant to the state of peers are sent\nover. Events include peers going online and offline.",
+        "operationId": "SubscribePeerEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcPeerEvent"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcPeerEvent"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
     "/v1/peers/{pub_key}": {
       "delete": {
         "summary": "lncli: `disconnect`\nDisconnectPeer attempts to disconnect one peer from another identified by a\ngiven pubKey. In the case that we currently have a pending or active channel\nwith the target peer, then this action will be not be allowed.",
@@ -1202,6 +1772,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcDisconnectPeerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1229,6 +1805,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcSignMessageResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -1238,6 +1820,39 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/lnrpcSignMessageRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/stop": {
+      "post": {
+        "summary": "lncli: `stop`\nStopDaemon will send a shutdown request to the interrupt handler, triggering\na graceful shutdown of the daemon.",
+        "operationId": "StopDaemon",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcStopResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/lnrpcStopRequest"
             }
           }
         ],
@@ -1256,6 +1871,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcForwardingHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1283,6 +1904,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcTransactionDetails"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1317,6 +1944,12 @@
             "schema": {
               "$ref": "#/definitions/lnrpcSendCoinsResponse"
             }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
           }
         },
         "parameters": [
@@ -1337,12 +1970,19 @@
     "/v1/transactions/fee": {
       "get": {
         "summary": "lncli: `estimatefee`\nEstimateFee asks the chain backend to estimate the fee rate and total fees\nfor a transaction that pays to multiple specified outputs.",
+        "description": "When using REST, the `AddrToAmount` map type can be set by appending\n`\u0026AddrToAmount[\u003caddress\u003e]=\u003camount_to_send\u003e` to the URL. Unfortunately this\nmap type doesn't appear in the REST API documentation because of a bug in\nthe grpc-gateway library.",
         "operationId": "EstimateFee",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcEstimateFeeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1361,15 +2001,105 @@
         ]
       }
     },
+    "/v1/transactions/many": {
+      "post": {
+        "summary": "lncli: `sendmany`\nSendMany handles a request for a transaction that creates multiple specified\noutputs in parallel. If neither target_conf, or sat_per_byte are set, then\nthe internal wallet will consult its fee model to determine a fee for the\ndefault confirmation target.",
+        "operationId": "SendMany",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcSendManyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/lnrpcSendManyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
+    "/v1/transactions/subscribe": {
+      "get": {
+        "summary": "SubscribeTransactions creates a uni-directional stream from the server to\nthe client in which any newly discovered transactions relevant to the\nwallet are sent over.",
+        "operationId": "SubscribeTransactions",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/lnrpcTransaction"
+                },
+                "error": {
+                  "$ref": "#/definitions/runtimeStreamError"
+                }
+              },
+              "title": "Stream result of lnrpcTransaction"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "start_height",
+            "description": "The height from which to list transactions, inclusive. If this value is\ngreater than end_height, transactions will be read in reverse.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "end_height",
+            "description": "The height until which to list transactions, inclusive. To include\nunconfirmed transactions, this value should be set to -1, which will\nreturn transactions from start_height until the current chain tip and\nunconfirmed transactions. If no end_height is provided, the call will\ndefault to this option.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
     "/v1/utxos": {
       "get": {
-        "summary": "lncli: `listunspent`\nListUnspent returns a list of all utxos spendable by the wallet with a\nnumber of confirmations between the specified minimum and maximum.",
+        "summary": "lncli: `listunspent`\nDeprecated, use walletrpc.ListUnspent instead.",
+        "description": "ListUnspent returns a list of all utxos spendable by the wallet with a\nnumber of confirmations between the specified minimum and maximum.",
         "operationId": "ListUnspent",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcListUnspentResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1405,6 +2135,12 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/lnrpcVerifyMessageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
             }
           }
         },
@@ -1533,10 +2269,11 @@
       "enum": [
         "UNKNOWN_SYNC",
         "ACTIVE_SYNC",
-        "PASSIVE_SYNC"
+        "PASSIVE_SYNC",
+        "PINNED_SYNC"
       ],
       "default": "UNKNOWN_SYNC",
-      "description": " - UNKNOWN_SYNC: Denotes that we cannot determine the peer's current sync type.\n - ACTIVE_SYNC: Denotes that we are actively receiving new graph updates from the peer.\n - PASSIVE_SYNC: Denotes that we are not receiving new graph updates from the peer."
+      "description": " - UNKNOWN_SYNC: Denotes that we cannot determine the peer's current sync type.\n - ACTIVE_SYNC: Denotes that we are actively receiving new graph updates from the peer.\n - PASSIVE_SYNC: Denotes that we are not receiving new graph updates from the peer.\n - PINNED_SYNC: Denotes that this peer is pinned into an active sync."
     },
     "PendingChannelsResponseClosedChannel": {
       "type": "object",
@@ -1731,6 +2468,11 @@
           "type": "string",
           "format": "uint64",
           "description": "The \"add\" index of this invoice. Each newly created invoice will increment\nthis index making it monotonically increasing. Callers to the\nSubscribeInvoices call can use this to instantly get notified of all added\ninvoices with an add_index greater than this one."
+        },
+        "payment_addr": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment address of the generated invoice. This value should be used\nin all payments for this invoice as we require it for end to end\nsecurity."
         }
       }
     },
@@ -1746,6 +2488,21 @@
       "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)",
       "title": "`AddressType` has to be one of:"
     },
+    "lnrpcAmount": {
+      "type": "object",
+      "properties": {
+        "sat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Value denominated in satoshis."
+        },
+        "msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Value denominated in milli-satoshis."
+        }
+      }
+    },
     "lnrpcBakeMacaroonRequest": {
       "type": "object",
       "properties": {
@@ -1755,6 +2512,11 @@
             "$ref": "#/definitions/lnrpcMacaroonPermission"
           },
           "description": "The list of permissions the new macaroon should grant."
+        },
+        "root_key_id": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The root key ID used to create the macaroon, must be a positive integer."
         }
       }
     },
@@ -1822,7 +2584,7 @@
         "thaw_height": {
           "type": "integer",
           "format": "int64",
-          "description": "This uint32 indicates if this channel is to be considered 'frozen'. A\nfrozen channel does not allow a cooperative channel close by the\ninitiator. The thaw_height is the height that this restriction stops\napplying to the channel."
+          "description": "This uint32 indicates if this channel is to be considered 'frozen'. A frozen\nchannel does not allow a cooperative channel close by the initiator. The\nthaw_height is the height that this restriction stops applying to the\nchannel. The height can be interpreted in two ways: as a relative height if\nthe value is less than 500,000, or as an absolute height otherwise."
         }
       }
     },
@@ -1907,7 +2669,7 @@
         "csv_delay": {
           "type": "integer",
           "format": "int64",
-          "description": "The CSV delay expressed in relative blocks. If the channel is force closed,\nwe will need to wait for this many blocks before we can regain our funds."
+          "description": "Deprecated. The CSV delay expressed in relative blocks. If the channel is\nforce closed, we will need to wait for this many blocks before we can regain\nour funds."
         },
         "private": {
           "type": "boolean",
@@ -1926,12 +2688,12 @@
         "local_chan_reserve_sat": {
           "type": "string",
           "format": "int64",
-          "description": "The minimum satoshis this node is required to reserve in its balance."
+          "description": "Deprecated. The minimum satoshis this node is required to reserve in its\nbalance."
         },
         "remote_chan_reserve_sat": {
           "type": "string",
           "format": "int64",
-          "description": "The minimum satoshis the other node is required to reserve in its balance."
+          "description": "Deprecated. The minimum satoshis the other node is required to reserve in\nits balance."
         },
         "static_remote_key": {
           "type": "boolean",
@@ -1964,7 +2726,15 @@
         "thaw_height": {
           "type": "integer",
           "format": "int64",
-          "description": "This uint32 indicates if this channel is to be considered 'frozen'. A\nfrozen channel doest not allow a cooperative channel close by the\ninitiator. The thaw_height is the height that this restriction stops\napplying to the channel. This field is optional, not setting it or using a\nvalue of zero will mean the channel has no additional restrictions."
+          "description": "This uint32 indicates if this channel is to be considered 'frozen'. A\nfrozen channel doest not allow a cooperative channel close by the\ninitiator. The thaw_height is the height that this restriction stops\napplying to the channel. This field is optional, not setting it or using a\nvalue of zero will mean the channel has no additional restrictions. The\nheight can be interpreted in two ways: as a relative height if the value is\nless than 500,000, or as an absolute height otherwise."
+        },
+        "local_constraints": {
+          "$ref": "#/definitions/lnrpcChannelConstraints",
+          "description": "List constraints for the local node."
+        },
+        "remote_constraints": {
+          "$ref": "#/definitions/lnrpcChannelConstraints",
+          "description": "List constraints for the remote node."
         }
       }
     },
@@ -2070,12 +2840,36 @@
         "balance": {
           "type": "string",
           "format": "int64",
-          "title": "Sum of channels balances denominated in satoshis"
+          "title": "Deprecated. Sum of channels balances denominated in satoshis"
         },
         "pending_open_balance": {
           "type": "string",
           "format": "int64",
-          "title": "Sum of channels pending balances denominated in satoshis"
+          "title": "Deprecated. Sum of channels pending balances denominated in satoshis"
+        },
+        "local_balance": {
+          "$ref": "#/definitions/lnrpcAmount",
+          "description": "Sum of channels local balances."
+        },
+        "remote_balance": {
+          "$ref": "#/definitions/lnrpcAmount",
+          "description": "Sum of channels remote balances."
+        },
+        "unsettled_local_balance": {
+          "$ref": "#/definitions/lnrpcAmount",
+          "description": "Sum of channels local unsettled balances."
+        },
+        "unsettled_remote_balance": {
+          "$ref": "#/definitions/lnrpcAmount",
+          "description": "Sum of channels remote unsettled balances."
+        },
+        "pending_open_local_balance": {
+          "$ref": "#/definitions/lnrpcAmount",
+          "description": "Sum of channels pending local balances."
+        },
+        "pending_open_remote_balance": {
+          "$ref": "#/definitions/lnrpcAmount",
+          "description": "Sum of channels pending remote balances."
         }
       }
     },
@@ -2134,6 +2928,12 @@
         "close_initiator": {
           "$ref": "#/definitions/lnrpcInitiator",
           "description": "Close initiator indicates which party initiated the close. This value will\nbe unknown for channels that were cooperatively closed before we started\ntracking cooperative close initiators. Note that this indicates which party\ninitiated a close, and it is possible for both to initiate cooperative or\nforce closes, although only one party's close will be confirmed on chain."
+        },
+        "resolutions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcResolution"
+          }
         }
       }
     },
@@ -2147,6 +2947,41 @@
         "success": {
           "type": "boolean",
           "format": "boolean"
+        }
+      }
+    },
+    "lnrpcChannelConstraints": {
+      "type": "object",
+      "properties": {
+        "csv_delay": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The CSV delay expressed in relative blocks. If the channel is force closed,\nwe will need to wait for this many blocks before we can regain our funds."
+        },
+        "chan_reserve_sat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The minimum satoshis this node is required to reserve in its balance."
+        },
+        "dust_limit_sat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The dust limit (in satoshis) of the initiator's commitment tx."
+        },
+        "max_pending_amt_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The maximum amount of coins in millisatoshis that can be pending in this\nchannel."
+        },
+        "min_htlc_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The smallest HTLC in millisatoshis that the initiator will accept."
+        },
+        "max_accepted_htlcs": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The total number of incoming HTLC's that the initiator will accept."
         }
       }
     },
@@ -2439,11 +3274,28 @@
           "type": "boolean",
           "format": "boolean",
           "description": "If set, the daemon will attempt to persistently connect to the target\npeer. Otherwise, the call will be synchronous."
+        },
+        "timeout": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The connection timeout value (in seconds) for this request. It won't affect\nother requests."
         }
       }
     },
     "lnrpcConnectPeerResponse": {
       "type": "object"
+    },
+    "lnrpcDebugLevelRequest": {
+      "type": "object",
+      "properties": {
+        "show": {
+          "type": "boolean",
+          "format": "boolean"
+        },
+        "level_spec": {
+          "type": "string"
+        }
+      }
     },
     "lnrpcDebugLevelResponse": {
       "type": "object",
@@ -2455,6 +3307,16 @@
     },
     "lnrpcDeleteAllPaymentsResponse": {
       "type": "object"
+    },
+    "lnrpcDeleteMacaroonIDResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "A boolean indicates that the deletion is successful."
+        }
+      }
     },
     "lnrpcDisconnectPeerResponse": {
       "type": "object"
@@ -2567,7 +3429,13 @@
         "PAYMENT_ADDR_REQ",
         "PAYMENT_ADDR_OPT",
         "MPP_REQ",
-        "MPP_OPT"
+        "MPP_OPT",
+        "WUMBO_CHANNELS_REQ",
+        "WUMBO_CHANNELS_OPT",
+        "ANCHORS_REQ",
+        "ANCHORS_OPT",
+        "ANCHORS_ZERO_FEE_HTLC_REQ",
+        "ANCHORS_ZERO_FEE_HTLC_OPT"
       ],
       "default": "DATALOSS_PROTECT_REQ"
     },
@@ -2731,12 +3599,17 @@
         "signed_psbt": {
           "type": "string",
           "format": "byte",
-          "description": "The funded PSBT that contains all witness data to send the exact channel\ncapacity amount to the PK script returned in the open channel message in a\nprevious step."
+          "description": "The funded PSBT that contains all witness data to send the exact channel\ncapacity amount to the PK script returned in the open channel message in a\nprevious step. Cannot be set at the same time as final_raw_tx."
         },
         "pending_chan_id": {
           "type": "string",
           "format": "byte",
           "description": "The pending channel ID of the channel to get the PSBT for."
+        },
+        "final_raw_tx": {
+          "type": "string",
+          "format": "byte",
+          "description": "As an alternative to the signed PSBT with all witness data, the final raw\nwire format transaction can also be specified directly. Cannot be set at the\nsame time as signed_psbt."
         }
       }
     },
@@ -2780,6 +3653,27 @@
     },
     "lnrpcFundingStateStepResp": {
       "type": "object"
+    },
+    "lnrpcFundingTransitionMsg": {
+      "type": "object",
+      "properties": {
+        "shim_register": {
+          "$ref": "#/definitions/lnrpcFundingShim",
+          "description": "The funding shim to register. This should be used before any\nchannel funding has began by the remote party, as it is intended as a\npreparatory step for the full channel funding."
+        },
+        "shim_cancel": {
+          "$ref": "#/definitions/lnrpcFundingShimCancel",
+          "description": "Used to cancel an existing registered funding shim."
+        },
+        "psbt_verify": {
+          "$ref": "#/definitions/lnrpcFundingPsbtVerify",
+          "description": "Used to continue a funding flow that was initiated to be executed\nthrough a PSBT. This step verifies that the PSBT contains the correct\noutputs to fund the channel."
+        },
+        "psbt_finalize": {
+          "$ref": "#/definitions/lnrpcFundingPsbtFinalize",
+          "description": "Used to continue a funding flow that was initiated to be executed\nthrough a PSBT. This step finalizes the funded and signed PSBT, finishes\nnegotiation with the peer and finally publishes the resulting funding\ntransaction."
+        }
+      }
     },
     "lnrpcGetInfoResponse": {
       "type": "object",
@@ -2876,6 +3770,26 @@
         }
       }
     },
+    "lnrpcGetRecoveryInfoResponse": {
+      "type": "object",
+      "properties": {
+        "recovery_mode": {
+          "type": "boolean",
+          "format": "boolean",
+          "title": "Whether the wallet is in recovery mode"
+        },
+        "recovery_finished": {
+          "type": "boolean",
+          "format": "boolean",
+          "title": "Whether the wallet recovery progress is finished"
+        },
+        "progress": {
+          "type": "number",
+          "format": "double",
+          "description": "The recovery progress, ranging from 0 to 1."
+        }
+      }
+    },
     "lnrpcGraphTopologyUpdate": {
       "type": "object",
       "properties": {
@@ -2917,12 +3831,32 @@
         "expiration_height": {
           "type": "integer",
           "format": "int64"
+        },
+        "htlc_index": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Index identifying the htlc on the channel."
+        },
+        "forwarding_channel": {
+          "type": "string",
+          "format": "uint64",
+          "description": "If this HTLC is involved in a forwarding operation, this field indicates\nthe forwarding channel. For an outgoing htlc, it is the incoming channel.\nFor an incoming htlc, it is the outgoing channel. When the htlc\noriginates from this node or this node is the final destination,\nforwarding_channel will be zero. The forwarding channel will also be zero\nfor htlcs that need to be forwarded but don't have a forwarding decision\npersisted yet."
+        },
+        "forwarding_htlc_index": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Index identifying the htlc on the forwarding channel."
         }
       }
     },
     "lnrpcHTLCAttempt": {
       "type": "object",
       "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The unique ID that is used for this attempt."
+        },
         "status": {
           "$ref": "#/definitions/HTLCAttemptHTLCStatus",
           "description": "The status of the HTLC."
@@ -3172,6 +4106,11 @@
           "type": "boolean",
           "format": "boolean",
           "description": "Indicates if this invoice was a spontaneous payment that arrived via keysend\n[EXPERIMENTAL]."
+        },
+        "payment_addr": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment address of this invoice. This value will be used in MPP\npayments, and also for newer invoies that always require the MPP paylaod\nfor added end-to-end security."
         }
       }
     },
@@ -3349,6 +4288,19 @@
         }
       }
     },
+    "lnrpcListMacaroonIDsResponse": {
+      "type": "object",
+      "properties": {
+        "root_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uint64"
+          },
+          "description": "The list of root key IDs that are in use."
+        }
+      }
+    },
     "lnrpcListPaymentsResponse": {
       "type": "object",
       "properties": {
@@ -3380,6 +4332,18 @@
             "$ref": "#/definitions/lnrpcPeer"
           },
           "title": "The list of currently connected peers"
+        }
+      }
+    },
+    "lnrpcListPermissionsResponse": {
+      "type": "object",
+      "properties": {
+        "method_permissions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/lnrpcMacaroonPermissionList"
+          },
+          "description": "A map between all RPC method URIs and their required macaroon permissions to\naccess them."
         }
       }
     },
@@ -3420,6 +4384,18 @@
         "action": {
           "type": "string",
           "description": "The action that is granted."
+        }
+      }
+    },
+    "lnrpcMacaroonPermissionList": {
+      "type": "object",
+      "properties": {
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcMacaroonPermission"
+          },
+          "description": "A list of macaroon permissions."
         }
       }
     },
@@ -3592,6 +4568,13 @@
         },
         "color": {
           "type": "string"
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/lnrpcFeature"
+          },
+          "description": "Features that the node has advertised in the init message, node\nannouncements and invoices."
         }
       }
     },
@@ -3659,6 +4642,21 @@
         "funding_shim": {
           "$ref": "#/definitions/lnrpcFundingShim",
           "description": "Funding shims are an optional argument that allow the caller to intercept\ncertain funding functionality. For example, a shim can be provided to use a\nparticular key for the commitment key (ideally cold) rather than use one\nthat is generated by the wallet as normal, or signal that signing will be\ncarried out in an interactive manner (PSBT based)."
+        },
+        "remote_max_value_in_flight_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The maximum amount of coins in millisatoshi that can be pending within\nthe channel. It only applies to the remote party."
+        },
+        "remote_max_htlcs": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The maximum number of concurrent HTLCs we will allow the remote party to add\nto the commitment transaction."
+        },
+        "max_local_csv": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Max local csv is the maximum csv delay we will allow for our own commitment\ntransaction."
         }
       }
     },
@@ -3906,6 +4904,16 @@
             "$ref": "#/definitions/lnrpcTimestampedError"
           },
           "description": "The latest errors received from our peer with timestamps, limited to the 10\nmost recent errors. These errors are tracked across peer connections, but\nare not persisted across lnd restarts. Note that these errors are only\nstored for peers that we have channels open with, to prevent peers from\nspamming us with errors at no cost."
+        },
+        "flap_count": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The number of times we have recorded this peer going offline or coming\nonline, recorded across restarts. Note that this value is decreased over\ntime if the peer has not recently flapped, so that we can forgive peers\nwith historically high flap counts."
+        },
+        "last_flap_ns": {
+          "type": "string",
+          "format": "int64",
+          "description": "The timestamp of the last flap we observed for this peer. If this value is\nzero, we have not observed any flaps for this peer."
         }
       }
     },
@@ -4065,6 +5073,11 @@
           "type": "string",
           "format": "byte",
           "description": "An optional base PSBT the new channel output will be added to. If this is\nnon-empty, it must be a binary serialized PSBT."
+        },
+        "no_publish": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "If a channel should be part of a batch (multiple channel openings in one\ntransaction), it can be dangerous if the whole batch transaction is\npublished too early before all channel opening negotiations are completed.\nThis flag prevents this particular channel from broadcasting the transaction\nafter the negotiation with the remote peer. In a batch of channel openings\nthis flag should be set to true for every channel but the very last."
         }
       }
     },
@@ -4103,6 +5116,57 @@
           "description": "A raw PSBT that contains the pending channel output. If a base PSBT was\nprovided in the PsbtShim, this is the base PSBT with one additional output.\nIf no base PSBT was specified, this is an otherwise empty PSBT with exactly\none output."
         }
       }
+    },
+    "lnrpcResolution": {
+      "type": "object",
+      "properties": {
+        "resolution_type": {
+          "$ref": "#/definitions/lnrpcResolutionType",
+          "description": "The type of output we are resolving."
+        },
+        "outcome": {
+          "$ref": "#/definitions/lnrpcResolutionOutcome",
+          "description": "The outcome of our on chain action that resolved the outpoint."
+        },
+        "outpoint": {
+          "$ref": "#/definitions/lnrpcOutPoint",
+          "description": "The outpoint that was spent by the resolution."
+        },
+        "amount_sat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount that was claimed by the resolution."
+        },
+        "sweep_txid": {
+          "type": "string",
+          "description": "The hex-encoded transaction ID of the sweep transaction that spent the\noutput."
+        }
+      }
+    },
+    "lnrpcResolutionOutcome": {
+      "type": "string",
+      "enum": [
+        "OUTCOME_UNKNOWN",
+        "CLAIMED",
+        "UNCLAIMED",
+        "ABANDONED",
+        "FIRST_STAGE",
+        "TIMEOUT"
+      ],
+      "default": "OUTCOME_UNKNOWN",
+      "description": " - OUTCOME_UNKNOWN: Outcome unknown.\n - CLAIMED: An output was claimed on chain.\n - UNCLAIMED: An output was left unclaimed on chain.\n - ABANDONED: ResolverOutcomeAbandoned indicates that an output that we did not\nclaim on chain, for example an anchor that we did not sweep and a\nthird party claimed on chain, or a htlc that we could not decode\nso left unclaimed.\n - FIRST_STAGE: If we force closed our channel, our htlcs need to be claimed in two\nstages. This outcome represents the broadcast of a timeout or success\ntransaction for this two stage htlc claim.\n - TIMEOUT: A htlc was timed out on chain."
+    },
+    "lnrpcResolutionType": {
+      "type": "string",
+      "enum": [
+        "TYPE_UNKNOWN",
+        "ANCHOR",
+        "INCOMING_HTLC",
+        "OUTGOING_HTLC",
+        "COMMIT"
+      ],
+      "default": "TYPE_UNKNOWN",
+      "description": " - ANCHOR: We resolved an anchor output.\n - INCOMING_HTLC: We are resolving an incoming htlc on chain. This if this htlc is\nclaimed, we swept the incoming htlc with the preimage. If it is timed\nout, our peer swept the timeout path.\n - OUTGOING_HTLC: We are resolving an outgoing htlc on chain. If this htlc is claimed,\nthe remote party swept the htlc with the preimage. If it is timed out,\nwe swept it with the timeout path.\n - COMMIT: We force closed and need to sweep our time locked commitment output."
     },
     "lnrpcRestoreBackupResponse": {
       "type": "object"
@@ -4234,6 +5298,16 @@
         "label": {
           "type": "string",
           "description": "An optional label for the transaction, limited to 500 characters."
+        },
+        "min_confs": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The minimum number of confirmations each one of your outputs used for\nthe transaction must satisfy."
+        },
+        "spend_unconfirmed": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "Whether unconfirmed outputs should be used as inputs for the transaction."
         }
       }
     },
@@ -4243,6 +5317,43 @@
         "txid": {
           "type": "string",
           "title": "The transaction ID of the transaction"
+        }
+      }
+    },
+    "lnrpcSendManyRequest": {
+      "type": "object",
+      "properties": {
+        "AddrToAmount": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "format": "int64"
+          },
+          "title": "The map from addresses to amounts"
+        },
+        "target_conf": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The target number of blocks that this transaction should be confirmed\nby."
+        },
+        "sat_per_byte": {
+          "type": "string",
+          "format": "int64",
+          "description": "A manual fee rate set in sat/byte that should be used when crafting the\ntransaction."
+        },
+        "label": {
+          "type": "string",
+          "description": "An optional label for the transaction, limited to 500 characters."
+        },
+        "min_confs": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The minimum number of confirmations each one of your outputs used for\nthe transaction must satisfy."
+        },
+        "spend_unconfirmed": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "Whether unconfirmed outputs should be used as inputs for the transaction."
         }
       }
     },
@@ -4391,6 +5502,9 @@
           "title": "The signature for the given message"
         }
       }
+    },
+    "lnrpcStopRequest": {
+      "type": "object"
     },
     "lnrpcStopResponse": {
       "type": "object"
@@ -4568,6 +5682,27 @@
         }
       }
     },
+    "runtimeError": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
     "runtimeStreamError": {
       "type": "object",
       "properties": {
@@ -4592,128 +5727,6 @@
           }
         }
       }
-    }
-  },
-  "x-stream-definitions": {
-    "lnrpcChanBackupSnapshot": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcChanBackupSnapshot"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcChanBackupSnapshot"
-    },
-    "lnrpcChannelAcceptRequest": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcChannelAcceptRequest"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcChannelAcceptRequest"
-    },
-    "lnrpcChannelEventUpdate": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcChannelEventUpdate"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcChannelEventUpdate"
-    },
-    "lnrpcCloseStatusUpdate": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcCloseStatusUpdate"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcCloseStatusUpdate"
-    },
-    "lnrpcGraphTopologyUpdate": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcGraphTopologyUpdate"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcGraphTopologyUpdate"
-    },
-    "lnrpcInvoice": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcInvoice"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcInvoice"
-    },
-    "lnrpcOpenStatusUpdate": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcOpenStatusUpdate"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcOpenStatusUpdate"
-    },
-    "lnrpcPeerEvent": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcPeerEvent"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcPeerEvent"
-    },
-    "lnrpcSendResponse": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcSendResponse"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcSendResponse"
-    },
-    "lnrpcTransaction": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/lnrpcTransaction"
-        },
-        "error": {
-          "$ref": "#/definitions/runtimeStreamError"
-        }
-      },
-      "title": "Stream result of lnrpcTransaction"
     }
   }
 }

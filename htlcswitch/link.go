@@ -135,10 +135,10 @@ type ChannelLinkConfig struct {
 	Switch *Switch
 
 	// ForwardPackets attempts to forward the batch of htlcs through the
-	// switch, any failed packets will be returned to the provided
-	// ChannelLink. The link's quit signal should be provided to allow
+	// switch. The function returns and error in case it fails to send one or
+	// more packets. The link's quit signal should be provided to allow
 	// cancellation of forwarding during link shutdown.
-	ForwardPackets func(chan struct{}, ...*htlcPacket) chan error
+	ForwardPackets func(chan struct{}, ...*htlcPacket) error
 
 	// DecodeHopIterators facilitates batched decoding of HTLC Sphinx onion
 	// blobs, which are then used to inform how to forward an HTLC.
@@ -256,7 +256,7 @@ type ChannelLinkConfig struct {
 
 	// TowerClient is an optional engine that manages the signing,
 	// encrypting, and uploading of justice transactions to the daemon's
-	// configured set of watchtowers.
+	// configured set of watchtowers for legacy channels.
 	TowerClient TowerClient
 
 	// MaxOutgoingCltvExpiry is the maximum outgoing timelock that the link
@@ -268,6 +268,10 @@ type ChannelLinkConfig struct {
 	// commitment fee to be of its balance. This only applies to the
 	// initiator of the channel.
 	MaxFeeAllocation float64
+
+	// MaxAnchorsCommitFeeRate is the max commitment fee rate we'll use as
+	// the initiator for channels of the anchor type.
+	MaxAnchorsCommitFeeRate chainfee.SatPerKWeight
 
 	// NotifyActiveLink allows the link to tell the ChannelNotifier when a
 	// link is first started.
@@ -435,12 +439,7 @@ func (l *channelLink) Start() error {
 
 	// If the config supplied watchtower client, ensure the channel is
 	// registered before trying to use it during operation.
-	// TODO(halseth): support anchor types for watchtower.
-	state := l.channel.State()
-	if l.cfg.TowerClient != nil && state.ChanType.HasAnchors() {
-		l.log.Warnf("Skipping tower registration for anchor " +
-			"channel type")
-	} else if l.cfg.TowerClient != nil && !state.ChanType.HasAnchors() {
+	if l.cfg.TowerClient != nil {
 		err := l.cfg.TowerClient.RegisterChannel(l.ChanID())
 		if err != nil {
 			return err
@@ -521,7 +520,14 @@ func (l *channelLink) Stop() {
 		l.cfg.ChainEvents.Cancel()
 	}
 
-	l.updateFeeTimer.Stop()
+	// Ensure the channel for the timer is drained.
+	if !l.updateFeeTimer.Stop() {
+		select {
+		case <-l.updateFeeTimer.C:
+		default:
+		}
+	}
+
 	l.hodlQueue.Stop()
 
 	close(l.quit)
@@ -776,7 +782,7 @@ func (l *channelLink) resolveFwdPkg(fwdPkg *channeldb.FwdPkg) error {
 		l.log.Debugf("removing completed fwd pkg for height=%d",
 			fwdPkg.Height)
 
-		err := l.channel.RemoveFwdPkg(fwdPkg.Height)
+		err := l.channel.RemoveFwdPkgs(fwdPkg.Height)
 		if err != nil {
 			l.log.Errorf("unable to remove fwd pkg for height=%d: "+
 				"%v", fwdPkg.Height, err)
@@ -843,33 +849,49 @@ func (l *channelLink) fwdPkgGarbager() {
 	l.cfg.FwdPkgGCTicker.Resume()
 	defer l.cfg.FwdPkgGCTicker.Stop()
 
+	if err := l.loadAndRemove(); err != nil {
+		l.log.Warnf("unable to run initial fwd pkgs gc: %v", err)
+	}
+
 	for {
 		select {
 		case <-l.cfg.FwdPkgGCTicker.Ticks():
-			fwdPkgs, err := l.channel.LoadFwdPkgs()
-			if err != nil {
-				l.log.Warnf("unable to load fwdpkgs for gc: %v",
+			if err := l.loadAndRemove(); err != nil {
+				l.log.Warnf("unable to remove fwd pkgs: %v",
 					err)
 				continue
-			}
-
-			// TODO(conner): batch removal of forward packages.
-			for _, fwdPkg := range fwdPkgs {
-				if fwdPkg.State != channeldb.FwdStateCompleted {
-					continue
-				}
-
-				err = l.channel.RemoveFwdPkg(fwdPkg.Height)
-				if err != nil {
-					l.log.Warnf("unable to remove fwd pkg "+
-						"for height=%d: %v",
-						fwdPkg.Height, err)
-				}
 			}
 		case <-l.quit:
 			return
 		}
 	}
+}
+
+// loadAndRemove loads all the channels forwarding packages and determines if
+// they can be removed. It is called once before the FwdPkgGCTicker ticks so that
+// a longer tick interval can be used.
+func (l *channelLink) loadAndRemove() error {
+	fwdPkgs, err := l.channel.LoadFwdPkgs()
+	if err != nil {
+		return err
+	}
+
+	var removeHeights []uint64
+	for _, fwdPkg := range fwdPkgs {
+		if fwdPkg.State != channeldb.FwdStateCompleted {
+			continue
+		}
+
+		removeHeights = append(removeHeights, fwdPkg.Height)
+	}
+
+	// If removeHeights is empty, return early so we don't use a db
+	// transaction.
+	if len(removeHeights) == 0 {
+		return nil
+	}
+
+	return l.channel.RemoveFwdPkgs(removeHeights...)
 }
 
 // htlcManager is the primary goroutine which drives a channel's commitment
@@ -1072,7 +1094,10 @@ func (l *channelLink) htlcManager() {
 			// based on our current set fee rate. We'll cap the new
 			// fee rate to our max fee allocation.
 			commitFee := l.channel.CommitFeeRate()
-			maxFee := l.channel.MaxFeeRate(l.cfg.MaxFeeAllocation)
+			maxFee := l.channel.MaxFeeRate(
+				l.cfg.MaxFeeAllocation,
+				l.cfg.MaxAnchorsCommitFeeRate,
+			)
 			newCommitFee := chainfee.SatPerKWeight(
 				math.Min(float64(netFee), float64(maxFee)),
 			)
@@ -1819,14 +1844,9 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 			return
 		}
 
-		// If we have a tower client, we'll proceed in backing up the
-		// state that was just revoked.
-		// TODO(halseth): support anchor types for watchtower.
-		state := l.channel.State()
-		if l.cfg.TowerClient != nil && state.ChanType.HasAnchors() {
-			l.log.Warnf("Skipping tower backup for anchor " +
-				"channel type")
-		} else if l.cfg.TowerClient != nil && !state.ChanType.HasAnchors() {
+		// If we have a tower client for this channel type, we'll
+		if l.cfg.TowerClient != nil {
+			state := l.channel.State()
 			breachInfo, err := lnwallet.NewBreachRetribution(
 				state, state.RemoteCommitment.CommitHeight-1, 0,
 			)
@@ -1836,10 +1856,9 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 				return
 			}
 
-			chanType := l.channel.State().ChanType
 			chanID := l.ChanID()
 			err = l.cfg.TowerClient.BackupState(
-				&chanID, breachInfo, chanType.IsTweakless(),
+				&chanID, breachInfo, state.ChanType,
 			)
 			if err != nil {
 				l.fail(LinkFailureError{code: ErrInternalError},
@@ -1884,9 +1903,21 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 		// Error received from remote, MUST fail channel, but should
 		// only print the contents of the error message if all
 		// characters are printable ASCII.
-		l.fail(LinkFailureError{code: ErrRemoteError},
+		l.fail(
+			LinkFailureError{
+				code: ErrRemoteError,
+
+				// TODO(halseth): we currently don't fail the
+				// channel permanently, as there are some sync
+				// issues with other implementations that will
+				// lead to them sending an error message, but
+				// we can recover from on next connection. See
+				// https://github.com/ElementsProject/lightning/issues/4212
+				PermanentFailure: false,
+			},
 			"ChannelPoint(%v): received error from peer: %v",
-			l.channel.ChannelPoint(), msg.Error())
+			l.channel.ChannelPoint(), msg.Error(),
+		)
 	default:
 		l.log.Warnf("received unknown message of type %T", msg)
 	}
@@ -2731,6 +2762,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 					obfuscator:      obfuscator,
 					incomingTimeout: pd.Timeout,
 					outgoingTimeout: fwdInfo.OutgoingCTLV,
+					customRecords:   pld.CustomRecords(),
 				}
 				switchPackets = append(
 					switchPackets, updatePacket,
@@ -2794,6 +2826,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 					obfuscator:      obfuscator,
 					incomingTimeout: pd.Timeout,
 					outgoingTimeout: fwdInfo.OutgoingCTLV,
+					customRecords:   pld.CustomRecords(),
 				}
 
 				fwdPkg.FwdFilter.Set(idx)
@@ -2971,8 +3004,10 @@ func (l *channelLink) forwardBatch(packets ...*htlcPacket) {
 		filteredPkts = append(filteredPkts, pkt)
 	}
 
-	errChan := l.cfg.ForwardPackets(l.quit, filteredPkts...)
-	go handleBatchFwdErrs(errChan, l.log)
+	if err := l.cfg.ForwardPackets(l.quit, filteredPkts...); err != nil {
+		log.Errorf("Unhandled error while reforwarding htlc "+
+			"settle/fail over htlcswitch: %v", err)
+	}
 }
 
 // sendHTLCError functions cancels HTLC and send cancel message back to the

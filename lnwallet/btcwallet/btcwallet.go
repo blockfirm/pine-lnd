@@ -12,12 +12,14 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcutil/psbt"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/btcsuite/btcwallet/wallet/txrules"
 	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -97,7 +99,7 @@ func New(cfg Config) (*BtcWallet, error) {
 		}
 		loader := base.NewLoader(
 			cfg.NetParams, netDir, cfg.NoFreelistSync,
-			cfg.RecoveryWindow,
+			cfg.DBTimeOut, cfg.RecoveryWindow,
 		)
 		walletExists, err := loader.WalletExists()
 		if err != nil {
@@ -277,9 +279,11 @@ func (b *BtcWallet) IsOurAddress(a btcutil.Address) bool {
 // the specified outputs. In the case the wallet has insufficient funds, or the
 // outputs are non-standard, a non-nil error will be returned.
 //
+// NOTE: This method requires the global coin selection lock to be held.
+//
 // This is a part of the WalletController interface.
 func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, label string) (*wire.MsgTx, error) {
+	feeRate chainfee.SatPerKWeight, minconf int32, label string) (*wire.MsgTx, error) {
 
 	// Convert our fee rate from sat/kw to sat/kb since it's required by
 	// SendOutputs.
@@ -290,8 +294,13 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 		return nil, lnwallet.ErrNoOutputs
 	}
 
+	// Sanity check minconf.
+	if minconf < 0 {
+		return nil, lnwallet.ErrInvalidMinconf
+	}
+
 	return b.wallet.SendOutputs(
-		outputs, defaultAccount, 1, feeSatPerKB, label,
+		outputs, defaultAccount, minconf, feeSatPerKB, label,
 	)
 }
 
@@ -304,6 +313,8 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 //
 // NOTE: The dryRun argument can be set true to create a tx that doesn't alter
 // the database. A tx created with this set to true SHOULD NOT be broadcasted.
+//
+// NOTE: This method requires the global coin selection lock to be held.
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
@@ -339,6 +350,8 @@ func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
 // avoid race conditions when selecting inputs for usage when funding a
 // channel.
 //
+// NOTE: This method requires the global coin selection lock to be held.
+//
 // This is a part of the WalletController interface.
 func (b *BtcWallet) LockOutpoint(o wire.OutPoint) {
 	pine.LockOutpoint(o)
@@ -347,13 +360,49 @@ func (b *BtcWallet) LockOutpoint(o wire.OutPoint) {
 // UnlockOutpoint unlocks a previously locked output, marking it eligible for
 // coin selection.
 //
+// NOTE: This method requires the global coin selection lock to be held.
+//
 // This is a part of the WalletController interface.
 func (b *BtcWallet) UnlockOutpoint(o wire.OutPoint) {
 	pine.UnlockOutpoint(o)
 }
 
+// LeaseOutput locks an output to the given ID, preventing it from being
+// available for any future coin selection attempts. The absolute time of the
+// lock's expiration is returned. The expiration of the lock can be extended by
+// successive invocations of this call. Outputs can be unlocked before their
+// expiration through `ReleaseOutput`.
+//
+// If the output is not known, wtxmgr.ErrUnknownOutput is returned. If the
+// output has already been locked to a different ID, then
+// wtxmgr.ErrOutputAlreadyLocked is returned.
+//
+// NOTE: This method requires the global coin selection lock to be held.
+func (b *BtcWallet) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) (time.Time,
+	error) {
+
+	// Make sure we don't attempt to double lock an output that's been
+	// locked by the in-memory implementation.
+	if b.wallet.LockedOutpoint(op) {
+		return time.Time{}, wtxmgr.ErrOutputAlreadyLocked
+	}
+
+	return b.wallet.LeaseOutput(id, op)
+}
+
+// ReleaseOutput unlocks an output, allowing it to be available for coin
+// selection if it remains unspent. The ID should match the one used to
+// originally lock the output.
+//
+// NOTE: This method requires the global coin selection lock to be held.
+func (b *BtcWallet) ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error {
+	return b.wallet.ReleaseOutput(id, op)
+}
+
 // ListUnspentWitness returns a slice of all the unspent outputs the wallet
 // controls which pay to witness programs either directly or indirectly.
+//
+// NOTE: This method requires the global coin selection lock to be held.
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
@@ -462,7 +511,9 @@ func minedTransactionsToDetails(
 				txOut.PkScript, chainParams,
 			)
 			if err != nil {
-				return nil, err
+				// Skip any unsupported addresses to prevent
+				// other transactions from not being returned.
+				continue
 			}
 
 			destAddresses = append(destAddresses, outAddresses...)
@@ -511,7 +562,9 @@ func unminedTransactionsToDetail(
 		_, outAddresses, _, err :=
 			txscript.ExtractPkScriptAddrs(txOut.PkScript, chainParams)
 		if err != nil {
-			return nil, err
+			// Skip any unsupported addresses to prevent other
+			// transactions from not being returned.
+			continue
 		}
 
 		destAddresses = append(destAddresses, outAddresses...)
@@ -585,6 +638,51 @@ func (b *BtcWallet) ListTransactionDetails(startHeight,
 	return txDetails, nil
 }
 
+// FundPsbt creates a fully populated PSBT packet that contains enough
+// inputs to fund the outputs specified in the passed in packet with the
+// specified fee rate. If there is change left, a change output from the
+// internal wallet is added and the index of the change output is returned.
+// Otherwise no additional output is created and the index -1 is returned.
+//
+// NOTE: If the packet doesn't contain any inputs, coin selection is
+// performed automatically. If the packet does contain any inputs, it is
+// assumed that full coin selection happened externally and no
+// additional inputs are added. If the specified inputs aren't enough to
+// fund the outputs with the given fee rate, an error is returned.
+// No lock lease is acquired for any of the selected/validated inputs.
+// It is in the caller's responsibility to lock the inputs before
+// handing them out.
+//
+// This is a part of the WalletController interface.
+func (b *BtcWallet) FundPsbt(packet *psbt.Packet,
+	feeRate chainfee.SatPerKWeight) (int32, error) {
+
+	// The fee rate is passed in using units of sat/kw, so we'll convert
+	// this to sat/KB as the CreateSimpleTx method requires this unit.
+	feeSatPerKB := btcutil.Amount(feeRate.FeePerKVByte())
+
+	// Let the wallet handle coin selection and/or fee estimation based on
+	// the partial TX information in the packet.
+	return b.wallet.FundPsbt(packet, defaultAccount, feeSatPerKB)
+}
+
+// FinalizePsbt expects a partial transaction with all inputs and
+// outputs fully declared and tries to sign all inputs that belong to
+// the wallet. Lnd must be the last signer of the transaction. That
+// means, if there are any unsigned non-witness inputs or inputs without
+// UTXO information attached or inputs without witness data that do not
+// belong to lnd's wallet, this method will fail. If no error is
+// returned, the PSBT is ready to be extracted and the final TX within
+// to be broadcast.
+//
+// NOTE: This method does NOT publish the transaction after it's been
+// finalized successfully.
+//
+// This is a part of the WalletController interface.
+func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet) error {
+	return b.wallet.FinalizePsbt(packet)
+}
+
 // txSubscriptionClient encapsulates the transaction notification client from
 // the base wallet. Notifications received from the client will be proxied over
 // two distinct channels.
@@ -630,6 +728,8 @@ func (t *txSubscriptionClient) Cancel() {
 // wallet's notification client to a higher-level TransactionSubscription
 // client.
 func (t *txSubscriptionClient) notificationProxier() {
+	defer t.wg.Done()
+
 out:
 	for {
 		select {
@@ -679,8 +779,6 @@ out:
 			break out
 		}
 	}
-
-	t.wg.Done()
 }
 
 // SubscribeTransactions returns a TransactionSubscription client which
@@ -724,9 +822,19 @@ func (b *BtcWallet) IsSynced() (bool, int64, error) {
 		return false, 0, err
 	}
 
+	// Make sure the backing chain has been considered synced first.
+	if !b.wallet.ChainSynced() {
+		bestHeader, err := b.cfg.ChainSource.GetBlockHeader(bestHash)
+		if err != nil {
+			return false, 0, err
+		}
+		bestTimestamp = bestHeader.Timestamp.Unix()
+		return false, bestTimestamp, nil
+	}
+
 	// If the wallet hasn't yet fully synced to the node's best chain tip,
 	// then we're not yet fully synced.
-	if syncState.Height < bestHeight || !b.wallet.ChainSynced() {
+	if syncState.Height < bestHeight {
 		return false, bestTimestamp, nil
 	}
 
@@ -747,4 +855,84 @@ func (b *BtcWallet) IsSynced() (bool, int64, error) {
 	}
 
 	return true, bestTimestamp, nil
+}
+
+// GetRecoveryInfo returns a boolean indicating whether the wallet is started
+// in recovery mode. It also returns a float64, ranging from 0 to 1,
+// representing the recovery progress made so far.
+//
+// This is a part of the WalletController interface.
+func (b *BtcWallet) GetRecoveryInfo() (bool, float64, error) {
+	isRecoveryMode := true
+	progress := float64(0)
+
+	// A zero value in RecoveryWindow indicates there is no trigger of
+	// recovery mode.
+	if b.cfg.RecoveryWindow == 0 {
+		isRecoveryMode = false
+		return isRecoveryMode, progress, nil
+	}
+
+	// Query the wallet's birthday block height from db.
+	var birthdayBlock waddrmgr.BlockStamp
+	err := walletdb.View(b.db, func(tx walletdb.ReadTx) error {
+		var err error
+		addrmgrNs := tx.ReadBucket(waddrmgrNamespaceKey)
+		birthdayBlock, _, err = b.wallet.Manager.BirthdayBlock(addrmgrNs)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		// The wallet won't start until the backend is synced, thus the birthday
+		// block won't be set and this particular error will be returned. We'll
+		// catch this error and return a progress of 0 instead.
+		if waddrmgr.IsError(err, waddrmgr.ErrBirthdayBlockNotSet) {
+			return isRecoveryMode, progress, nil
+		}
+
+		return isRecoveryMode, progress, err
+	}
+
+	// Grab the best chain state the wallet is currently aware of.
+	syncState := b.wallet.Manager.SyncedTo()
+
+	// Next, query the chain backend to grab the info about the tip of the
+	// main chain.
+	//
+	// NOTE: The actual recovery process is handled by the btcsuite/btcwallet.
+	// The process purposefully doesn't update the best height. It might create
+	// a small difference between the height queried here and the height used
+	// in the recovery process, ie, the bestHeight used here might be greater,
+	// showing the recovery being unfinished while it's actually done. However,
+	// during a wallet rescan after the recovery, the wallet's synced height
+	// will catch up and this won't be an issue.
+	_, bestHeight, err := b.cfg.ChainSource.GetBestBlock()
+	if err != nil {
+		return isRecoveryMode, progress, err
+	}
+
+	// The birthday block height might be greater than the current synced height
+	// in a newly restored wallet, and might be greater than the chain tip if a
+	// rollback happens. In that case, we will return zero progress here.
+	if syncState.Height < birthdayBlock.Height ||
+		bestHeight < birthdayBlock.Height {
+		return isRecoveryMode, progress, nil
+	}
+
+	// progress is the ratio of the [number of blocks processed] over the [total
+	// number of blocks] needed in a recovery mode, ranging from 0 to 1, in
+	// which,
+	// - total number of blocks is the current chain's best height minus the
+	//   wallet's birthday height plus 1.
+	// - number of blocks processed is the wallet's synced height minus its
+	//   birthday height plus 1.
+	// - If the wallet is born very recently, the bestHeight can be equal to
+	//   the birthdayBlock.Height, and it will recovery instantly.
+	progress = float64(syncState.Height-birthdayBlock.Height+1) /
+		float64(bestHeight-birthdayBlock.Height+1)
+
+	return isRecoveryMode, progress, nil
 }

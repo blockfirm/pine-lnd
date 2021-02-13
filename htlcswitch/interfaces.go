@@ -8,6 +8,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/record"
 )
 
 // InvoiceDatabase is an interface which represents the persistent subsystem
@@ -182,7 +183,80 @@ type TowerClient interface {
 	// abide by the negotiated policy. If the channel we're trying to back
 	// up doesn't have a tweak for the remote party's output, then
 	// isTweakless should be true.
-	BackupState(*lnwire.ChannelID, *lnwallet.BreachRetribution, bool) error
+	BackupState(*lnwire.ChannelID, *lnwallet.BreachRetribution,
+		channeldb.ChannelType) error
+}
+
+// InterceptableHtlcForwarder is the interface to set the interceptor
+// implementation that intercepts htlc forwards.
+type InterceptableHtlcForwarder interface {
+	// SetInterceptor sets a ForwardInterceptor.
+	SetInterceptor(interceptor ForwardInterceptor)
+}
+
+// ForwardInterceptor is a function that is invoked from the switch for every
+// incoming htlc that is intended to be forwarded. It is passed with the
+// InterceptedForward that contains the information about the packet and a way
+// to resolve it manually later in case it is held.
+// The return value indicates if this handler will take control of this forward
+// and resolve it later or let the switch execute its default behavior.
+type ForwardInterceptor func(InterceptedForward) bool
+
+// InterceptedPacket contains the relevant information for the interceptor about
+// an htlc.
+type InterceptedPacket struct {
+	// IncomingCircuit contains the incoming channel and htlc id of the
+	// packet.
+	IncomingCircuit channeldb.CircuitKey
+
+	// OutgoingChanID is the destination channel for this packet.
+	OutgoingChanID lnwire.ShortChannelID
+
+	// Hash is the payment hash of the htlc.
+	Hash lntypes.Hash
+
+	// OutgoingExpiry is the absolute block height at which the outgoing
+	// htlc expires.
+	OutgoingExpiry uint32
+
+	// OutgoingAmount is the amount to forward.
+	OutgoingAmount lnwire.MilliSatoshi
+
+	// IncomingExpiry is the absolute block height at which the incoming
+	// htlc expires.
+	IncomingExpiry uint32
+
+	// IncomingAmount is the amount of the accepted htlc.
+	IncomingAmount lnwire.MilliSatoshi
+
+	// CustomRecords are user-defined records in the custom type range that
+	// were included in the payload.
+	CustomRecords record.CustomSet
+
+	// OnionBlob is the onion packet for the next hop
+	OnionBlob [lnwire.OnionPacketSize]byte
+}
+
+// InterceptedForward is passed to the ForwardInterceptor for every forwarded
+// htlc. It contains all the information about the packet which accordingly
+// the interceptor decides if to hold or not.
+// In addition this interface allows a later resolution by calling either
+// Resume, Settle or Fail.
+type InterceptedForward interface {
+	// Packet returns the intercepted packet.
+	Packet() InterceptedPacket
+
+	// Resume notifies the intention to resume an existing hold forward. This
+	// basically means the caller wants to resume with the default behavior for
+	// this htlc which usually means forward it.
+	Resume() error
+
+	// Settle notifies the intention to settle an existing hold
+	// forward with a given preimage.
+	Settle(lntypes.Preimage) error
+
+	// Fails notifies the intention to fail an existing hold forward
+	Fail() error
 }
 
 // htlcNotifier is an interface which represents the input side of the

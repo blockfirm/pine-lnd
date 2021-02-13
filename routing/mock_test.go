@@ -72,6 +72,9 @@ func (m *mockPaymentAttemptDispatcher) GetPaymentResult(paymentID uint64,
 	return c, nil
 
 }
+func (m *mockPaymentAttemptDispatcher) CleanStore(map[uint64]struct{}) error {
+	return nil
+}
 
 func (m *mockPaymentAttemptDispatcher) setPaymentResult(
 	f func(firstHop lnwire.ShortChannelID) ([32]byte, error)) {
@@ -101,6 +104,7 @@ func (m *mockPaymentSessionSource) NewPaymentSessionEmpty() PaymentSession {
 }
 
 type mockMissionControl struct {
+	MissionControl
 }
 
 var _ MissionController = (*mockMissionControl)(nil)
@@ -185,6 +189,10 @@ func (m *mockPayer) GetPaymentResult(paymentID uint64, _ lntypes.Hash,
 	case <-m.quit:
 		return nil, fmt.Errorf("test quitting")
 	}
+}
+
+func (m *mockPayer) CleanStore(pids map[uint64]struct{}) error {
+	return nil
 }
 
 type initArgs struct {
@@ -446,13 +454,8 @@ func (m *mockControlTower) FetchInFlightPayments() (
 			continue
 		}
 
-		var attempts []channeldb.HTLCAttemptInfo
-		for _, a := range p.attempts {
-			attempts = append(attempts, a.HTLCAttemptInfo)
-		}
 		ifl := channeldb.InFlightPayment{
-			Info:     &p.info,
-			Attempts: attempts,
+			Info: &p.info,
 		}
 
 		fl = append(fl, &ifl)

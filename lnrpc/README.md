@@ -55,6 +55,8 @@ description):
      * Lists all available connected peers.
   * GetInfo
      * Returns basic data concerning the daemon.
+  * GetRecoveryInfo
+     * Returns information about recovery process.
   * PendingChannels
      * List the number of pending (not fully confirmed) channels.
   * ListChannels
@@ -127,6 +129,11 @@ description):
   * BakeMacaroon
      * Bakes a new macaroon with the provided list of permissions and
        restrictions
+  * ListMacaroonIDs
+     * List all the macaroon root key IDs that are in use.
+  * DeleteMacaroonID
+     * Remove a specific macaroon root key ID from the database and invalidates
+       all macaroons derived from the key with that ID. 
 
 ## Service: WalletUnlocker
 
@@ -140,62 +147,27 @@ description):
 
 ## Installation and Updating
 
-```bash
-$ go get -u github.com/lightningnetwork/lnd/lnrpc
+```shell
+⛰  go get -u github.com/lightningnetwork/lnd/lnrpc
 ```
 
 ## Generate protobuf definitions
 
-### Linux
+To compile the `lnrpc/**/*.proto` files and generate the protobuf definitions,
+you need to have [Docker](https://docs.docker.com/get-docker/) and `make`
+installed.
 
-For linux there is an easy install script that is also used for the Travis CI
-build. Just run the following command (requires `sudo` permissions and the tools
-`make`, `go`, `wget` and `unzip` to be installed) from the repository's root
-folder:
-
-`./scripts/install_travis_proto.sh`
-
-### MacOS / Unix like systems
-
-1. Download [v.3.4.0](https://github.com/google/protobuf/releases/tag/v3.4.0) of
-`protoc` for your operating system and add it to your `PATH`.
-For example, if using macOS:
-```bash
-$ curl -LO https://github.com/google/protobuf/releases/download/v3.4.0/protoc-3.4.0-osx-x86_64.zip
-$ unzip protoc-3.4.0-osx-x86_64.zip -d protoc
-$ export PATH=$PWD/protoc/bin:$PATH
-```
-
-2. Install `golang/protobuf` at commit `b5d812f8a3706043e23a9cd5babf2e5423744d30` (v1.3.1).
-```bash
-$ git clone https://github.com/golang/protobuf $GOPATH/src/github.com/golang/protobuf
-$ cd $GOPATH/src/github.com/golang/protobuf
-$ git reset --hard v1.3.1
-$ make
-```
-
-3. Install 'genproto' at commit `a8101f21cf983e773d0c1133ebc5424792003214`.
-```bash
-$ go get google.golang.org/genproto
-$ cd $GOPATH/src/google.golang.org/genproto
-$ git reset --hard a8101f21cf983e773d0c1133ebc5424792003214
-```
-
-4. Install `grpc-ecosystem/grpc-gateway` at version `v1.8.6`.
-```bash
-$ git clone https://github.com/grpc-ecosystem/grpc-gateway $GOPATH/src/github.com/grpc-ecosystem/grpc-gateway
-$ cd $GOPATH/src/github.com/grpc-ecosystem/grpc-gateway
-$ git reset --hard v1.8.6
-$ go install ./protoc-gen-grpc-gateway ./protoc-gen-swagger
-```
-
-5. Run [`gen_protos.sh`](https://github.com/lightningnetwork/lnd/blob/master/lnrpc/gen_protos.sh)
-or `make rpc` to generate new protobuf definitions.
+Simply run `make rpc` to start the compilation process.
 
 ## Format .proto files
 
 We use `clang-format` to make sure the `.proto` files are formatted correctly.
-You can install the formatter on Ubuntu by running `apt install clang-format`.
+
+When running the `make rpc` command, the `.proto` files are also formatted. To
+format the files without also compiling them, you can install the `clang-format`
+formatter on Ubuntu by running `apt install clang-format` or on Mac by running
+`brew install clang-format`.
+The `make format` command should then produce the correct result.
 
 Consult [this page](http://releases.llvm.org/download.html) to find binaries
 for other operating systems or distributions.
@@ -204,7 +176,8 @@ for other operating systems or distributions.
 
 The following commands are available with `make`:
 
-* `rpc`: Compile `.proto` files (calls `lnrpc/gen_protos.sh`).
+* `rpc`: Compile and format all `.proto` files using Docker (calls
+  `lnrpc/gen_protos_docker.sh`).
 * `rpc-format`: Formats all `.proto` files according to our formatting rules.
   Requires `clang-format`, see previous chapter.
 * `rpc-check`: Runs both previous commands and makes sure the git work tree is

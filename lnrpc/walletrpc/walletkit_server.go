@@ -10,10 +10,15 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcutil/psbt"
+	"github.com/btcsuite/btcwallet/wtxmgr"
+	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/labels"
@@ -22,6 +27,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/sweep"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
@@ -98,12 +104,44 @@ var (
 			Entity: "onchain",
 			Action: "write",
 		}},
+		"/walletrpc.WalletKit/LeaseOutput": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
+		"/walletrpc.WalletKit/ReleaseOutput": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
+		"/walletrpc.WalletKit/ListUnspent": {{
+			Entity: "onchain",
+			Action: "read",
+		}},
+		"/walletrpc.WalletKit/FundPsbt": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
+		"/walletrpc.WalletKit/FinalizePsbt": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
 	}
 
 	// DefaultWalletKitMacFilename is the default name of the wallet kit
 	// macaroon that we expect to find via a file handle within the main
 	// configuration file in this package.
 	DefaultWalletKitMacFilename = "walletkit.macaroon"
+
+	// LndInternalLockID is the binary representation of the SHA256 hash of
+	// the string "lnd-internal-lock-id" and is used for UTXO lock leases to
+	// identify that we ourselves are locking an UTXO, for example when
+	// giving out a funded PSBT. The ID corresponds to the hex value of
+	// ede19a92ed321a4705f8a1cccc1d4f6182545d4bb4fae08bd5937831b7e38f98.
+	LndInternalLockID = wtxmgr.LockID{
+		0xed, 0xe1, 0x9a, 0x92, 0xed, 0x32, 0x1a, 0x47,
+		0x05, 0xf8, 0xa1, 0xcc, 0xcc, 0x1d, 0x4f, 0x61,
+		0x82, 0x54, 0x5d, 0x4b, 0xb4, 0xfa, 0xe0, 0x8b,
+		0xd5, 0x93, 0x78, 0x31, 0xb7, 0xe3, 0x8f, 0x98,
+	}
 )
 
 // ErrZeroLabel is returned when an attempt is made to label a transaction with
@@ -132,17 +170,20 @@ func New(cfg *Config) (*WalletKit, lnrpc.MacaroonPerms, error) {
 	}
 
 	// Now that we know the full path of the wallet kit macaroon, we can
-	// check to see if we need to create it or not.
+	// check to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
 	macFilePath := cfg.WalletKitMacPath
-	if !lnrpc.FileExists(macFilePath) && cfg.MacService != nil {
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Baking macaroons for WalletKit RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the wallet kit macaroon doesn't
 		// yet, exist, so we need to create it with the help of the
 		// main macaroon service.
-		walletKitMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		walletKitMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -154,7 +195,7 @@ func New(cfg *Config) (*WalletKit, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, walletKitMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -202,6 +243,148 @@ func (w *WalletKit) RegisterWithRootServer(grpcServer *grpc.Server) error {
 		"root gRPC server")
 
 	return nil
+}
+
+// RegisterWithRestServer will be called by the root REST mux to direct a sub
+// RPC server to register itself with the main REST mux server. Until this is
+// called, each sub-server won't be able to have requests routed towards it.
+//
+// NOTE: This is part of the lnrpc.SubServer interface.
+func (w *WalletKit) RegisterWithRestServer(ctx context.Context,
+	mux *runtime.ServeMux, dest string, opts []grpc.DialOption) error {
+
+	// We make sure that we register it with the main REST server to ensure
+	// all our methods are routed properly.
+	err := RegisterWalletKitHandlerFromEndpoint(ctx, mux, dest, opts)
+	if err != nil {
+		log.Errorf("Could not register WalletKit REST server "+
+			"with root REST server: %v", err)
+		return err
+	}
+
+	log.Debugf("WalletKit REST server successfully registered with " +
+		"root REST server")
+	return nil
+}
+
+// ListUnspent returns useful information about each unspent output owned by the
+// wallet, as reported by the underlying `ListUnspentWitness`; the information
+// returned is: outpoint, amount in satoshis, address, address type,
+// scriptPubKey in hex and number of confirmations.  The result is filtered to
+// contain outputs whose number of confirmations is between a
+// minimum and maximum number of confirmations specified by the user, with 0
+// meaning unconfirmed.
+func (w *WalletKit) ListUnspent(ctx context.Context,
+	req *ListUnspentRequest) (*ListUnspentResponse, error) {
+
+	// Validate the confirmation arguments.
+	minConfs, maxConfs, err := lnrpc.ParseConfs(req.MinConfs, req.MaxConfs)
+	if err != nil {
+		return nil, err
+	}
+
+	// With our arguments validated, we'll query the internal wallet for
+	// the set of UTXOs that match our query.
+	//
+	// We'll acquire the global coin selection lock to ensure there aren't
+	// any other concurrent processes attempting to lock any UTXOs which may
+	// be shown available to us.
+	var utxos []*lnwallet.Utxo
+	err = w.cfg.CoinSelectionLocker.WithCoinSelectLock(func() error {
+		utxos, err = w.cfg.Wallet.ListUnspentWitness(minConfs, maxConfs)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	rpcUtxos, err := lnrpc.MarshalUtxos(utxos, w.cfg.ChainParams)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ListUnspentResponse{
+		Utxos: rpcUtxos,
+	}, nil
+}
+
+// LeaseOutput locks an output to the given ID, preventing it from being
+// available for any future coin selection attempts. The absolute time of the
+// lock's expiration is returned. The expiration of the lock can be extended by
+// successive invocations of this call. Outputs can be unlocked before their
+// expiration through `ReleaseOutput`.
+//
+// If the output is not known, wtxmgr.ErrUnknownOutput is returned. If the
+// output has already been locked to a different ID, then
+// wtxmgr.ErrOutputAlreadyLocked is returned.
+func (w *WalletKit) LeaseOutput(ctx context.Context,
+	req *LeaseOutputRequest) (*LeaseOutputResponse, error) {
+
+	if len(req.Id) != 32 {
+		return nil, errors.New("id must be 32 random bytes")
+	}
+	var lockID wtxmgr.LockID
+	copy(lockID[:], req.Id)
+
+	// Don't allow ID's of 32 bytes, but all zeros.
+	if lockID == (wtxmgr.LockID{}) {
+		return nil, errors.New("id must be 32 random bytes")
+	}
+
+	// Don't allow our internal ID to be used externally for locking. Only
+	// unlocking is allowed.
+	if lockID == LndInternalLockID {
+		return nil, errors.New("reserved id cannot be used")
+	}
+
+	op, err := unmarshallOutPoint(req.Outpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	// Acquire the global coin selection lock to ensure there aren't any
+	// other concurrent processes attempting to lease the same UTXO.
+	var expiration time.Time
+	err = w.cfg.CoinSelectionLocker.WithCoinSelectLock(func() error {
+		expiration, err = w.cfg.Wallet.LeaseOutput(lockID, *op)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &LeaseOutputResponse{
+		Expiration: uint64(expiration.Unix()),
+	}, nil
+}
+
+// ReleaseOutput unlocks an output, allowing it to be available for coin
+// selection if it remains unspent. The ID should match the one used to
+// originally lock the output.
+func (w *WalletKit) ReleaseOutput(ctx context.Context,
+	req *ReleaseOutputRequest) (*ReleaseOutputResponse, error) {
+
+	if len(req.Id) != 32 {
+		return nil, errors.New("id must be 32 random bytes")
+	}
+	var lockID wtxmgr.LockID
+	copy(lockID[:], req.Id)
+
+	op, err := unmarshallOutPoint(req.Outpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	// Acquire the global coin selection lock to maintain consistency as
+	// it's acquired when we initially leased the output.
+	err = w.cfg.CoinSelectionLocker.WithCoinSelectLock(func() error {
+		return w.cfg.Wallet.ReleaseOutput(lockID, *op)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ReleaseOutputResponse{}, nil
 }
 
 // DeriveNextKey attempts to derive the *next* key within the key family
@@ -320,6 +503,13 @@ func (w *WalletKit) SendOutputs(ctx context.Context,
 		})
 	}
 
+	// Then, we'll extract the minimum number of confirmations that each
+	// output we use to fund the transaction should satisfy.
+	minConfs, err := lnrpc.ExtractMinConfs(req.MinConfs, req.SpendUnconfirmed)
+	if err != nil {
+		return nil, err
+	}
+
 	label, err := labels.ValidateAPI(req.Label)
 	if err != nil {
 		return nil, err
@@ -328,7 +518,7 @@ func (w *WalletKit) SendOutputs(ctx context.Context,
 	// Now that we have the outputs mapped, we can request that the wallet
 	// attempt to create this transaction.
 	tx, err := w.cfg.Wallet.SendOutputs(
-		outputsToCreate, chainfee.SatPerKWeight(req.SatPerKw), label,
+		outputsToCreate, chainfee.SatPerKWeight(req.SatPerKw), minConfs, label,
 	)
 	if err != nil {
 		return nil, err
@@ -527,6 +717,8 @@ func (w *WalletKit) BumpFee(ctx context.Context,
 		return nil, err
 	}
 
+	log.Debugf("Attempting to CPFP outpoint %s", op)
+
 	// Since we're unable to perform a bump through RBF, we'll assume the
 	// user is attempting to bump an unconfirmed transaction's fee rate by
 	// sweeping an output within it under control of the wallet with a
@@ -590,29 +782,14 @@ func (w *WalletKit) ListSweeps(ctx context.Context,
 	}
 
 	sweepTxns := make(map[string]bool)
-
-	txids := make([]string, len(sweeps))
-	for i, sweep := range sweeps {
+	for _, sweep := range sweeps {
 		sweepTxns[sweep.String()] = true
-		txids[i] = sweep.String()
 	}
 
-	// If the caller does not want verbose output, just return the set of
-	// sweep txids.
-	if !in.Verbose {
-		txidResp := &ListSweepsResponse_TransactionIDs{
-			TransactionIds: txids,
-		}
-
-		return &ListSweepsResponse{
-			Sweeps: &ListSweepsResponse_TransactionIds{
-				TransactionIds: txidResp,
-			},
-		}, nil
-	}
-
-	// If the caller does want full transaction lookups, query our wallet
-	// for all transactions, including unconfirmed transactions.
+	// Some of our sweeps could have been replaced by fee, or dropped out
+	// of the mempool. Here, we lookup our wallet transactions so that we
+	// can match our list of sweeps against the list of transactions that
+	// the wallet is still tracking.
 	transactions, err := w.cfg.Wallet.ListTransactionDetails(
 		0, btcwallet.UnconfirmedHeight,
 	)
@@ -620,26 +797,41 @@ func (w *WalletKit) ListSweeps(ctx context.Context,
 		return nil, err
 	}
 
-	var sweepTxDetails []*lnwallet.TransactionDetail
+	var (
+		txids     []string
+		txDetails []*lnwallet.TransactionDetail
+	)
+
 	for _, tx := range transactions {
 		_, ok := sweepTxns[tx.Hash.String()]
 		if !ok {
 			continue
 		}
 
-		sweepTxDetails = append(sweepTxDetails, tx)
+		// Add the txid or full tx details depending on whether we want
+		// verbose output or not.
+		if in.Verbose {
+			txDetails = append(txDetails, tx)
+		} else {
+			txids = append(txids, tx.Hash.String())
+		}
 	}
 
-	// Fail if we have not retrieved all of our sweep transactions from the
-	// wallet.
-	if len(sweepTxDetails) != len(txids) {
-		return nil, fmt.Errorf("not all sweeps found by list "+
-			"transactions: %v, %v", len(sweepTxDetails), len(txids))
+	if in.Verbose {
+		return &ListSweepsResponse{
+			Sweeps: &ListSweepsResponse_TransactionDetails{
+				TransactionDetails: lnrpc.RPCTransactionDetails(
+					txDetails,
+				),
+			},
+		}, nil
 	}
 
 	return &ListSweepsResponse{
-		Sweeps: &ListSweepsResponse_TransactionDetails{
-			TransactionDetails: lnrpc.RPCTransactionDetails(transactions),
+		Sweeps: &ListSweepsResponse_TransactionIds{
+			TransactionIds: &ListSweepsResponse_TransactionIDs{
+				TransactionIds: txids,
+			},
 		},
 	}, nil
 }
@@ -667,4 +859,263 @@ func (w *WalletKit) LabelTransaction(ctx context.Context,
 
 	err = w.cfg.Wallet.LabelTransaction(*hash, req.Label, req.Overwrite)
 	return &LabelTransactionResponse{}, err
+}
+
+// FundPsbt creates a fully populated PSBT that contains enough inputs to fund
+// the outputs specified in the template. There are two ways of specifying a
+// template: Either by passing in a PSBT with at least one output declared or
+// by passing in a raw TxTemplate message. If there are no inputs specified in
+// the template, coin selection is performed automatically. If the template does
+// contain any inputs, it is assumed that full coin selection happened
+// externally and no additional inputs are added. If the specified inputs aren't
+// enough to fund the outputs with the given fee rate, an error is returned.
+// After either selecting or verifying the inputs, all input UTXOs are locked
+// with an internal app ID.
+//
+// NOTE: If this method returns without an error, it is the caller's
+// responsibility to either spend the locked UTXOs (by finalizing and then
+// publishing the transaction) or to unlock/release the locked UTXOs in case of
+// an error on the caller's side.
+func (w *WalletKit) FundPsbt(_ context.Context,
+	req *FundPsbtRequest) (*FundPsbtResponse, error) {
+
+	var (
+		err         error
+		packet      *psbt.Packet
+		feeSatPerKW chainfee.SatPerKWeight
+		locks       []*utxoLock
+		rawPsbt     bytes.Buffer
+	)
+
+	// There are two ways a user can specify what we call the template (a
+	// list of inputs and outputs to use in the PSBT): Either as a PSBT
+	// packet directly or as a special RPC message. Find out which one the
+	// user wants to use, they are mutually exclusive.
+	switch {
+	// The template is specified as a PSBT. All we have to do is parse it.
+	case req.GetPsbt() != nil:
+		r := bytes.NewReader(req.GetPsbt())
+		packet, err = psbt.NewFromRawBytes(r, false)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse PSBT: %v", err)
+		}
+
+	// The template is specified as a RPC message. We need to create a new
+	// PSBT and copy the RPC information over.
+	case req.GetRaw() != nil:
+		tpl := req.GetRaw()
+		if len(tpl.Outputs) == 0 {
+			return nil, fmt.Errorf("no outputs specified")
+		}
+
+		txOut := make([]*wire.TxOut, 0, len(tpl.Outputs))
+		for addrStr, amt := range tpl.Outputs {
+			addr, err := btcutil.DecodeAddress(
+				addrStr, w.cfg.ChainParams,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing address "+
+					"%s for network %s: %v", addrStr,
+					w.cfg.ChainParams.Name, err)
+			}
+			pkScript, err := txscript.PayToAddrScript(addr)
+			if err != nil {
+				return nil, fmt.Errorf("error getting pk "+
+					"script for address %s: %v", addrStr,
+					err)
+			}
+
+			txOut = append(txOut, &wire.TxOut{
+				Value:    int64(amt),
+				PkScript: pkScript,
+			})
+		}
+
+		txIn := make([]*wire.OutPoint, len(tpl.Inputs))
+		for idx, in := range tpl.Inputs {
+			op, err := unmarshallOutPoint(in)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing "+
+					"outpoint: %v", err)
+			}
+			txIn[idx] = op
+		}
+
+		sequences := make([]uint32, len(txIn))
+		packet, err = psbt.New(txIn, txOut, 2, 0, sequences)
+		if err != nil {
+			return nil, fmt.Errorf("could not create PSBT: %v", err)
+		}
+
+	default:
+		return nil, fmt.Errorf("transaction template missing, need " +
+			"to specify either PSBT or raw TX template")
+	}
+
+	// Determine the desired transaction fee.
+	switch {
+	// Estimate the fee by the target number of blocks to confirmation.
+	case req.GetTargetConf() != 0:
+		targetConf := req.GetTargetConf()
+		if targetConf < 2 {
+			return nil, fmt.Errorf("confirmation target must be " +
+				"greater than 1")
+		}
+
+		feeSatPerKW, err = w.cfg.FeeEstimator.EstimateFeePerKW(
+			targetConf,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("could not estimate fee: %v",
+				err)
+		}
+
+	// Convert the fee to sat/kW from the specified sat/vByte.
+	case req.GetSatPerVbyte() != 0:
+		feeSatPerKW = chainfee.SatPerKVByte(
+			req.GetSatPerVbyte() * 1000,
+		).FeePerKWeight()
+
+	default:
+		return nil, fmt.Errorf("fee definition missing, need to " +
+			"specify either target_conf or set_per_vbyte")
+	}
+
+	// The RPC parsing part is now over. Several of the following operations
+	// require us to hold the global coin selection lock so we do the rest
+	// of the tasks while holding the lock. The result is a list of locked
+	// UTXOs.
+	changeIndex := int32(-1)
+	err = w.cfg.CoinSelectionLocker.WithCoinSelectLock(func() error {
+		// In case the user did specify inputs, we need to make sure
+		// they are known to us, still unspent and not yet locked.
+		if len(packet.UnsignedTx.TxIn) > 0 {
+			// Get a list of all unspent witness outputs.
+			utxos, err := w.cfg.Wallet.ListUnspentWitness(
+				defaultMinConf, defaultMaxConf,
+			)
+			if err != nil {
+				return err
+			}
+
+			// Validate all inputs against our known list of UTXOs
+			// now.
+			err = verifyInputsUnspent(packet.UnsignedTx.TxIn, utxos)
+			if err != nil {
+				return err
+			}
+		}
+
+		// We made sure the input from the user is as sane as possible.
+		// We can now ask the wallet to fund the TX. This will not yet
+		// lock any coins but might still change the wallet DB by
+		// generating a new change address.
+		changeIndex, err = w.cfg.Wallet.FundPsbt(packet, feeSatPerKW)
+		if err != nil {
+			return fmt.Errorf("wallet couldn't fund PSBT: %v", err)
+		}
+
+		// Make sure we can properly serialize the packet. If this goes
+		// wrong then something isn't right with the inputs and we
+		// probably shouldn't try to lock any of them.
+		err = packet.Serialize(&rawPsbt)
+		if err != nil {
+			return fmt.Errorf("error serializing funded PSBT: %v",
+				err)
+		}
+
+		// Now we have obtained a set of coins that can be used to fund
+		// the TX. Let's lock them to be sure they aren't spent by the
+		// time the PSBT is published. This is the action we do here
+		// that could cause an error. Therefore if some of the UTXOs
+		// cannot be locked, the rollback of the other's locks also
+		// happens in this function. If we ever need to do more after
+		// this function, we need to extract the rollback needs to be
+		// extracted into a defer.
+		locks, err = lockInputs(w.cfg.Wallet, packet)
+		if err != nil {
+			return fmt.Errorf("could not lock inputs: %v", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert the lock leases to the RPC format.
+	rpcLocks := make([]*UtxoLease, len(locks))
+	for idx, lock := range locks {
+		rpcLocks[idx] = &UtxoLease{
+			Id: lock.lockID[:],
+			Outpoint: &lnrpc.OutPoint{
+				TxidBytes:   lock.outpoint.Hash[:],
+				TxidStr:     lock.outpoint.Hash.String(),
+				OutputIndex: lock.outpoint.Index,
+			},
+			Expiration: uint64(lock.expiration.Unix()),
+		}
+	}
+
+	return &FundPsbtResponse{
+		FundedPsbt:        rawPsbt.Bytes(),
+		ChangeOutputIndex: changeIndex,
+		LockedUtxos:       rpcLocks,
+	}, nil
+}
+
+// FinalizePsbt expects a partial transaction with all inputs and outputs fully
+// declared and tries to sign all inputs that belong to the wallet. Lnd must be
+// the last signer of the transaction. That means, if there are any unsigned
+// non-witness inputs or inputs without UTXO information attached or inputs
+// without witness data that do not belong to lnd's wallet, this method will
+// fail. If no error is returned, the PSBT is ready to be extracted and the
+// final TX within to be broadcast.
+//
+// NOTE: This method does NOT publish the transaction once finalized. It is the
+// caller's responsibility to either publish the transaction on success or
+// unlock/release any locked UTXOs in case of an error in this method.
+func (w *WalletKit) FinalizePsbt(_ context.Context,
+	req *FinalizePsbtRequest) (*FinalizePsbtResponse, error) {
+
+	// Parse the funded PSBT. No additional checks are required at this
+	// level as the wallet will perform all of them.
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(req.FundedPsbt), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing PSBT: %v", err)
+	}
+
+	// Let the wallet do the heavy lifting. This will sign all inputs that
+	// we have the UTXO for. If some inputs can't be signed and don't have
+	// witness data attached, this will fail.
+	err = w.cfg.Wallet.FinalizePsbt(packet)
+	if err != nil {
+		return nil, fmt.Errorf("error finalizing PSBT: %v", err)
+	}
+
+	var (
+		finalPsbtBytes bytes.Buffer
+		finalTxBytes   bytes.Buffer
+	)
+
+	// Serialize the finalized PSBT in both the packet and wire format.
+	err = packet.Serialize(&finalPsbtBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing PSBT: %v", err)
+	}
+	finalTx, err := psbt.Extract(packet)
+	if err != nil {
+		return nil, fmt.Errorf("unable to extract final TX: %v", err)
+	}
+	err = finalTx.Serialize(&finalTxBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing final TX: %v", err)
+	}
+
+	return &FinalizePsbtResponse{
+		SignedPsbt: finalPsbtBytes.Bytes(),
+		RawFinalTx: finalTxBytes.Bytes(),
+	}, nil
 }

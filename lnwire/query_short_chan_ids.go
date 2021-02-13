@@ -70,7 +70,7 @@ func ErrUnknownShortChanIDEncoding(encoding ShortChanIDEncoding) error {
 // message.
 type QueryShortChanIDs struct {
 	// ChainHash denotes the target chain that we're querying for the
-	// channel channel ID's of.
+	// channel ID's of.
 	ChainHash chainhash.Hash
 
 	// EncodingType is a signal to the receiver of the message that
@@ -155,8 +155,8 @@ func decodeShortChanIDs(r io.Reader) (ShortChanIDEncoding, []ShortChannelID, err
 	// In this encoding, we'll simply read a sort array of encoded short
 	// channel ID's from the buffer.
 	case EncodingSortedPlain:
-		// If after extracting the encoding type, then number of
-		// remaining bytes instead a whole multiple of the size of an
+		// If after extracting the encoding type, the number of
+		// remaining bytes is not a whole multiple of the size of an
 		// encoded short channel ID (8 bytes), then we'll return a
 		// parsing error.
 		if len(queryBody)%8 != 0 {
@@ -184,8 +184,13 @@ func decodeShortChanIDs(r io.Reader) (ShortChanIDEncoding, []ShortChannelID, err
 					"short chan ID: %v", err)
 			}
 
+			// We'll ensure that this short chan ID is greater than
+			// the last one. This is a requirement within the
+			// encoding, and if violated can aide us in detecting
+			// malicious payloads. This can only be true starting
+			// at the second chanID.
 			cid := shortChanIDs[i]
-			if cid.ToUint64() <= lastChanID.ToUint64() {
+			if i > 0 && cid.ToUint64() <= lastChanID.ToUint64() {
 				return 0, nil, ErrUnsortedSIDs{lastChanID, cid}
 			}
 			lastChanID = cid
@@ -224,6 +229,7 @@ func decodeShortChanIDs(r io.Reader) (ShortChanIDEncoding, []ShortChannelID, err
 		var (
 			shortChanIDs []ShortChannelID
 			lastChanID   ShortChannelID
+			i            int
 		)
 		for {
 			// We'll now attempt to read the next short channel ID
@@ -248,19 +254,21 @@ func decodeShortChanIDs(r io.Reader) (ShortChanIDEncoding, []ShortChannelID, err
 					"ID: %v", err)
 			}
 
-			// We successfully read the next ID, so well collect
+			// We successfully read the next ID, so we'll collect
 			// that in the set of final ID's to return.
 			shortChanIDs = append(shortChanIDs, cid)
 
 			// Finally, we'll ensure that this short chan ID is
 			// greater than the last one. This is a requirement
 			// within the encoding, and if violated can aide us in
-			// detecting malicious payloads.
-			if cid.ToUint64() <= lastChanID.ToUint64() {
+			// detecting malicious payloads. This can only be true
+			// starting at the second chanID.
+			if i > 0 && cid.ToUint64() <= lastChanID.ToUint64() {
 				return 0, nil, ErrUnsortedSIDs{lastChanID, cid}
 			}
 
 			lastChanID = cid
+			i++
 		}
 
 	default:

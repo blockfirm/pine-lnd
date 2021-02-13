@@ -2,7 +2,6 @@ package btcwallet
 
 import (
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/waddrmgr"
@@ -21,38 +20,16 @@ import (
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, error) {
-	utxo, err := pine.FetchInputInfo(prevOut)
+	txOut, err := pine.FetchInputInfo(prevOut)
 	if err != nil {
 		return nil, err
 	}
 
-	if utxo == nil {
+	if txOut == nil {
 		return nil, lnwallet.ErrNotMine
 	}
 
-	return serializers.DeserializeUtxo(utxo)
-}
-
-// fetchOutputAddr attempts to fetch the managed address corresponding to the
-// passed output script. This function is used to look up the proper key which
-// should be used to sign a specified input.
-func (b *BtcWallet) fetchOutputAddr(script []byte) (waddrmgr.ManagedAddress, error) {
-	_, addrs, _, err := txscript.ExtractPkScriptAddrs(script, b.netParams)
-	if err != nil {
-		return nil, err
-	}
-
-	// If the case of a multi-sig output, several address may be extracted.
-	// Therefore, we simply select the key for the first address we know
-	// of.
-	for _, addr := range addrs {
-		addr, err := b.wallet.AddressInfo(addr)
-		if err == nil {
-			return addr, nil
-		}
-	}
-
-	return nil, lnwallet.ErrNotMine
+	return serializers.DeserializeUtxo(txOut)
 }
 
 // deriveFromKeyLoc attempts to derive a private key using a fully specified
